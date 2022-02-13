@@ -19,6 +19,7 @@ unsigned long lastLoops = 0;
 bool ledState  = false;
 //uint32_t pattern[] = {0x12345678, 0x9abcdef0, 0xb0119876, 0x543210ab, 0xdeadbeef};
 uint32_t pattern[] = {0x01020304, 0x05060708, 0x090a0b0c, 0x0d0e0f10, 0x11121314};
+int syncPattern = FLEX1553_COMMAND_WORD;
 
 //LaParser ser1Parser(1);
 CmdParser cmdParser;
@@ -29,6 +30,7 @@ FlexIO_1553TX flex1553TX( FLEXIO2, true, false, false, false );
 FlexIO_1553RX flex1553RX( FLEXIO3, rx1553Pin );
 
 void processSerialCommand( char *buffer );
+static void isr1553Rx(void);
 
 
 // the setup() method runs once, when the sketch starts
@@ -60,6 +62,10 @@ void setup() {
       Serial.println( "flexRX.begin() failed" );
 
    analogWrite(pwmPin, 128);
+
+   flex1553RX.attachInterrupt(isr1553Rx);
+   flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 1);
+   flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 3);
 }
 
 
@@ -231,6 +237,9 @@ void processSerialCommand( char *buffer )
          else
            iVal = 2;
 
+         // this sets up the receiver watch for a command word
+         flex1553RX.set_sync(FLEX1553_COMMAND_WORD);
+
          //iVal = Flex2_1553TX_send( FLEX1553_COMMAND_WORD, 0x1234 );
          Serial.print( "cmd ret:  " );     // RTA, SA, WC
          //Serial.println( Flex1553TX_send_command(3, 7, 1) );
@@ -250,6 +259,7 @@ void processSerialCommand( char *buffer )
             Serial.println( flex1553TX.send( FLEX1553_DATA_WORD, 0xbead ) );
          }
       }
+
       else if( cmdParser.equalCommand("Chan") ) {
          if( cmdParser.getParamCount() >= 1 )
             iVal = atoi( cmdParser.getCmdParam(1) );
@@ -261,18 +271,19 @@ void processSerialCommand( char *buffer )
          Serial.print( ": ret: " );
          Serial.println( flex1553TX.set_channel(iVal) );
       }
-      //else if( cmdParser.equalCommand("Trigger") ) {
-      //  if( cmdParser.getParamCount() >= 1 )
-      //    ulVal = atoi( cmdParser.getCmdParam(1) );
-      //  else
-      //    ulVal = 0xffff;
-      //  if( cmdParser.getParamCount() >= 2 )
-      //    ulVal2 = atoi( cmdParser.getCmdParam(2) );
-      //  else
-      //    ulVal2 = 0xfff0;
-      //  Serial.print( "status: " );
-      //  Serial.print( Flex1553RX_trigger(ulVal, ulVal2) );
-      //}
+      else if( cmdParser.equalCommand("Trigger") ) {
+        if( cmdParser.getParamCount() >= 1 )
+          ulVal = cmdParser.getCmdParamAsInt(1);  // pattern
+        else
+          ulVal = 0xff00;
+        if( cmdParser.getParamCount() >= 2 )
+          ulVal2 = cmdParser.getCmdParamAsInt(2);  // mask
+        else
+          ulVal2 = 0x0;
+        Serial.print( "status: " );
+       // Serial.print( Flex1553RX_trigger(ulVal, ulVal2) );
+        Serial.print( flex1553RX.set_trigger(ulVal, ulVal2) );
+      }
       else if( cmdParser.equalCommand("Read") ) {   // Read *******************************
          //Serial.print( "RX: 0x" );
          //Serial.print( Flex3_1553RX_read_data(), HEX );
@@ -328,19 +339,19 @@ void processSerialCommand( char *buffer )
          //else
          //  iVal = 1;
 
-         uVal = flex1553TX.get_params( FLEXIO_PARAM_TRIGGERS );
+         uVal = flex1553TX.get_params( FLEXIO_TRIGGERS );
          Serial.print( " TRIG: " );
          Serial.print( uVal );
 
-         uVal = flex1553TX.get_params( FLEXIO_PARAM_PINS );
+         uVal = flex1553TX.get_params( FLEXIO_PINS );
          Serial.print( "  PIN: " );
          Serial.print( uVal );
 
-         uVal = flex1553TX.get_params( FLEXIO_PARAM_TIMERS );
+         uVal = flex1553TX.get_params( FLEXIO_TIMERS );
          Serial.print( "  TIMER: " );
          Serial.print( uVal );
 
-         uVal = flex1553TX.get_params( FLEXIO_PARAM_SHIFTERS );
+         uVal = flex1553TX.get_params( FLEXIO_SHIFTERS );
          Serial.print( "  SHIFTER: " );
          Serial.print( uVal );
          Serial.println();
@@ -462,3 +473,28 @@ void processSerialCommand( char *buffer )
    return;
 }
 
+
+
+static void isr1553Rx(void)
+{
+   int flags = flex1553RX.readInterruptFlags(FLEXIO_SHIFTERS);
+
+   if(flags & 0x08) { // found sync pattern
+      flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 3);  // not needed in Match Continuous mode?
+      if(syncPattern == FLEX1553_COMMAND_WORD) { // change to data sync
+         flex1553RX.set_sync(FLEX1553_DATA_WORD);
+      }
+
+      Serial.println("found sync");
+   }
+
+   if(flags & 0x02) { // received one word
+
+      uint32_t rx_data = flex1553RX.read_data();  // this also clears the interrupt flag
+      //flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 1);
+
+      Serial.print("received word: ");
+      Serial.println(rx_data >> 1, HEX);
+   }
+
+}

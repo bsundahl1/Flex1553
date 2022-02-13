@@ -6,7 +6,6 @@
 // 9/20/21  created base class for reusable FlexIO functions
 
 // Bug list
-//   startup messages not printing
 //   FLEX01 pair2 always seems to be enabled
 //   need to finish config_io_pins
 
@@ -69,6 +68,26 @@
 
 
 
+//static void isr1553Rx(void)
+//{
+//   int flags = flex1553RX.readInterruptFlags(FLEXIO_SHIFTERS);
+//
+//   if(flags & 0x08) { // found sync pattern
+//      Serial.println("found sync");
+//
+//      flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 3);
+//   }
+//
+//   if(flags & 0x01) { // received one word
+//      Serial.println("received word");
+//
+//      flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 0);
+//   }
+//
+//}
+
+
+
 FlexIO_1553RX::FlexIO_1553RX(uint8_t flex_num, uint8_t rxPin)
    :FlexIO_Base(flex_num, 40.0)
 {
@@ -112,6 +131,11 @@ bool FlexIO_1553RX::begin( void )
       #endif
       return false;
    }
+
+   // Enable RX interrupt routine
+   //FlexIO_Base::attachInterrupt(isr1553Rx);
+   //FlexIO_Base::enableInterruptSource(FLEXIO_SHIFTERS, 3);
+
 
    #ifdef FLEX_PRINT_MESSAGES  // print out pins used
       // Receiver Input pin
@@ -250,8 +274,9 @@ bool FlexIO_1553RX::config_flex(void)
    // it is clocked from from the FLEXIO clock
    // it is enabled by Shifter 3 status flag (TBD)
    m_flex->TIMCTL[0]    =
-           //FLEXIO_TIMCTL_TRGSEL( 13 )      |       // triggered by Shifter3 status flag (N*4) +1
-           FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 => (N * 2) = 8
+           FLEXIO_TIMCTL_TRGSEL( 13 )      |       // triggered by Shifter3 status flag (N*4) +1
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 => (N * 2) = 8
+           //FLEXIO_TIMCTL_TRGSEL( m_f_Pin * 2) |    // Input Pin 4 => (N * 2) = 8
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
@@ -268,11 +293,13 @@ bool FlexIO_1553RX::config_flex(void)
            FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
            // FLEXIO_TIMCFG_TSTART                 // start bit disabled
 
-   //  40 clocks,  divide clock by 20     ((n*2-1)<<8) | (baudrate_divider/2-1))
-   //                                     (40*2-1)<<8  | (20/2-1)
-   //                                         (79)<<8  | (9)
-   //                                          0x4F00  | 0x09
-   m_flex->TIMCMP[0]   =   0x4F09;
+   //  //40 clocks,  divide clock by 20     ((n*2-1)<<8) | (baudrate_divider/2-1))
+   //  34 clocks,  divide clock by 20     ((n*2-1)<<8) | (baudrate_divider/2-1))
+   //                                     (34*2-1)<<8  | (20/2-1)
+   //                                         (67)<<8  | (9)
+   //                                          0x4300  | 0x09
+   //m_flex->TIMCMP[0]   =   0x4F09;
+   m_flex->TIMCMP[0]   =   0x4309;
 
 
    // setup flex timer 1 *****************************************************
@@ -280,12 +307,12 @@ bool FlexIO_1553RX::config_flex(void)
    // it is clocked from from the FLEXIO clock
    // it is enabled by TBD
    m_flex->TIMCTL[1]    =
-           //FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Shifter3 status flag =(3 * 4) + 1
-           FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0)
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL(m_f_Pin * 2)      |        // Input Pin 4 =(2 * 4) + 0)
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553RX_PIN_TIM1_OUT )     |        // timer pin 11 (for debug only)
+           FLEXIO_TIMCTL_PINSEL( FLEX_1553RX_PIN_TIM1_OUT )   |   // timer pin 11 (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
 
@@ -305,11 +332,13 @@ bool FlexIO_1553RX::config_flex(void)
    // half clock is not visible in the timer output line, but does capture all
    // 20 bits.
    //
-   // 20-1/2 shifts,  divide clock by 40  ((n*2-1)<<8) | (baudrate_divider/2-1))
-   //                                   (20.5*2-1)<<8  | (40/2-1)
-   //                                         (40)<<8  | (19)
-   //                                          0x2800  | 0x13
-   m_flex->TIMCMP[1]  =  0x2813;
+   // //20-1/2 shifts,  divide clock by 40  ((n*2-1)<<8) | (baudrate_divider/2-1))
+   // 17-1/2 shifts,  divide clock by 40  ((n*2-1)<<8) | (baudrate_divider/2-1))
+   //                                   (17.5*2-1)<<8  | (40/2-1)
+   //                                         (34)<<8  | (19)
+   //                                          0x2200  | 0x13
+   //m_flex->TIMCMP[1]  =  0x2813;
+   m_flex->TIMCMP[1]  =  0x2213;
 
 
    // setup flex timer 2 *****************************************************
@@ -376,6 +405,14 @@ bool FlexIO_1553RX::config_flex(void)
    // this is an an extra timer that produces a reset to Timer3
    // it is clocked from from FlexIO
    // it is always enabled
+   //
+   // This is a workaround for a bug (in my opinion) in "Match continuous mode" which, as it
+   // turns out, does not match continuously! When the controlling timer (Timer3 in this case)
+   // wraps around, it causes the associated shifter (Shifter 3 here) to clear. This makes sense
+   // for transmit and receive modes, but not "match continuous". This timer is being used to
+   // reset Timer3 back to its initial count, before it reaches zero. So Timer3 will never wrap
+   // and Shifter3 will never clear, allowing it really match continuously.
+
    m_flex->TIMCTL[4]    =
            FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
@@ -408,7 +445,7 @@ bool FlexIO_1553RX::config_flex(void)
    m_flex->TIMCTL[7]    =
            FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
            //FLEXIO_TIMCTL_TRGSEL( 3 )     |        // Timer 0 output =(N * 4) + 3
-           //FLEXIO_TIMCTL_TRGSEL( m_f_Pin * 2 )      |        // Input Pin 4 =(N * 2)
+           //FLEXIO_TIMCTL_TRGSEL(m_f_Pin * 2)      |        // Input Pin 4 =(N * 2)
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
@@ -470,7 +507,7 @@ bool FlexIO_1553RX::config_flex(void)
            FLEXIO_SHIFTCTL_TIMSEL( 3 )    |        // clocked from timer 2
            // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
-           FLEXIO_SHIFTCTL_PINSEL( m_f_Pin )  |    // FLEXIO pin 4     (Input data stream)
+           FLEXIO_SHIFTCTL_PINSEL(m_f_Pin)  |    // FLEXIO pin 40     (Input data stream)
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
 
@@ -488,8 +525,9 @@ bool FlexIO_1553RX::config_flex(void)
    // anything outside the trigger pattern.
    // mask = 1100 0000 0000 0000   pattern = xx11 1111 1000 0000
    //      = 0xC000                        = 0xff80
-   m_flex->SHIFTBUFBIS[3] =  0xC000ff80U;
    //m_flex->SHIFTBUFBIS[3] =  0xC000ff80U;
+   //m_flex->SHIFTBUFBIS[3] =  0x8001ff00U;
+   m_flex->SHIFTBUFBIS[3] =  FLEX1553_COMMAND_SYNC_PATTERN;
 
 
 
@@ -663,13 +701,28 @@ unsigned long FlexIO_1553RX::read_faults( void )
 }
 
 
+void FlexIO_1553RX::set_sync( uint8_t sync_type )
+{
+   switch(sync_type) {
+      case FLEX1553_COMMAND_WORD:
+         // Shifter3 is in Match Continuous mode, and is constantly serarching for the sync pattern
+         // Interrupts are not disabled because this sould be single cycle write
+         m_flex->SHIFTBUFBIS[3] = FLEX1553_COMMAND_SYNC_PATTERN;
+         break;
+      case FLEX1553_DATA_WORD:
+         m_flex->SHIFTBUFBIS[3] = FLEX1553_DATA_SYNC_PATTERN;
+         break;
+   }
+}
+
 
 
 // set trigger pattern for RX data capture. For debug only
-int Flex1553RX_trigger( unsigned int trigger, unsigned int pattern )
+int FlexIO_1553RX::set_trigger( unsigned int pattern, unsigned int mask )
 {
-   // the lower 16 bits are the mask bits, which for now are all zero
-   FLEXIO3_SHIFTBUF3 = ((unsigned long)trigger << 16) | (unsigned long)pattern;
+   // the upper 16 bits are the mask bits
+   m_flex->SHIFTBUFBIS[3] = ((unsigned long)mask << 16) | (unsigned long)pattern;
+
    return( 0 );
 }
 
@@ -1824,4 +1877,6 @@ uint32_t Flex1_readShifter3( void )
 //  return( 0 );
 //}
 //
+
+
 

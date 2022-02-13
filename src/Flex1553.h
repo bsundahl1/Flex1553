@@ -4,6 +4,8 @@
 // 1553 experiment
 #define FLEX1553_COMMAND_WORD   1
 #define FLEX1553_DATA_WORD      0
+#define FLEX1553_COMMAND_SYNC_PATTERN  0x8001ff00U   // upper 16 bits is the mask, lower 16 bits is the trigger pattern
+#define FLEX1553_DATA_SYNC_PATTERN     0x800100ffU
 #define FLEX1553_CH_A      1
 #define FLEX1553_CH_B      2
 #define FLEX1553_CH_ALL    4
@@ -37,6 +39,14 @@ class FlexIO_1553TX: public FlexIO_Base
       bool config_flex( void );
       bool config_io_pins( void );
       uint8_t parity( uint32_t data );
+
+      uint8_t flexio_d_shift1_out;
+      uint8_t flexio_d_shift2_out;
+      uint8_t flexio_d_tim0_out;
+      uint8_t flexio_d_tim2_out;
+      uint8_t flexio_d_tim3_out;
+      uint8_t flexio_d_tim5_out;
+      uint8_t flexio_d_tim7_out;
 
 
    public:
@@ -101,6 +111,8 @@ class FlexIO_1553RX: public FlexIO_Base
       bool config_flex( void );
       bool config_io_pins( void );
       uint8_t parity( uint32_t data );
+      //void isr1553Rx(void);
+
 
    public:
       FlexIO_1553RX(uint8_t flex_num, uint8_t rxPin);
@@ -116,6 +128,13 @@ class FlexIO_1553RX: public FlexIO_Base
 
       // Read FlexIO status registers
       unsigned long get_status( void );
+
+      // Write the sync pattern to the FlexIO hardware
+      void set_sync( uint8_t sync_type );
+
+      // for debug
+      int set_trigger( unsigned int pattern, unsigned int mask );
+
 };
 
 
@@ -135,6 +154,7 @@ int Flex2_1553TX_get_status( void );
 
 //int Flex3_1553RX_config(void);
 //int Flex1553RX_trigger( unsigned int trigger, unsigned int pattern );
+
 //unsigned long Flex3_1553RX_get_status( void );
 //unsigned long Flex3_1553RX_read_data( void );
 //unsigned long Flex3_1553RX_read_faults( void );

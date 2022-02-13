@@ -4,10 +4,10 @@
 #define FLEXIO2   2
 #define FLEXIO3   3
 
-#define FLEXIO_PARAM_SHIFTERS    0
-#define FLEXIO_PARAM_TIMERS      1
-#define FLEXIO_PARAM_PINS        2
-#define FLEXIO_PARAM_TRIGGERS    3
+#define FLEXIO_SHIFTERS    0
+#define FLEXIO_TIMERS      1
+#define FLEXIO_PINS        2
+#define FLEXIO_TRIGGERS    3
 
 #define FLEXIO_REVERSE_LOOKUP    true
 #define FLEXIO_TEENSY_PIN_TO_FLEXIO_D  true
@@ -21,6 +21,43 @@
 *     FlexIO1     Pins: 2,3,4,5,33,49,50,52,54
 *     FlexIO2     Pins: 6,7,8,9,10,11,12,13,32,33,35,36,37
 *     FlexIO3     Pins: 7,8,14,15,16,17,18,19,20,21,22,23,26,27,34,35,36,37,38,39,40,41
+*/
+/*
+*  Pin mapping -  FXIO_Dxx lines to Teensy pins
+*                 *******  Teensy 4.1  ********
+*     FXIO_Dxx    FlexIO1    FlexIO2    FlexIO3
+*         0                                19
+*         1                                18
+*         2                                14
+*         3                                15
+*         4                                40
+*         5                                41
+*         6                                17
+*         7                                16
+*         8                                22
+*         9                                23
+*         10                                -
+*         11                               19
+*         12                               38
+*         13                               39
+*         14                               26
+*         15                               27
+*         16         -                      8
+*         17         -                      7
+*         18         -                     36
+*         19         -                     37
+*         20         -                     10
+*         21         -                     11
+*         22         -                      -
+*         23         -                      -
+*         24         -                      -
+*         25         -                      -
+*         26         -                      -
+*         27         -                      -
+*         28         -                     35
+*         29         -                     34
+*         30         -                      -
+*         31         -                      -
 */
 
 
@@ -62,6 +99,10 @@ class FlexIO_Base
       // @param p_postdiv  pointer to calculated post-divider (range: 1 to 8)
       // @param retrun     final divider ratio
       int calc_pll_clock_div( uint8_t divider, uint8_t *p_prediv, uint8_t *p_postdiv );
+
+      // returns the interrupt number for the flexIO module being used (m_flex_num)
+      int get_irq_num(void);
+
 
   public:
 
@@ -119,6 +160,15 @@ class FlexIO_Base
       // @param p_postdiv  post-divider (range: 1 to 8)
       // @param retrun     true if no errors
       bool config_clock_div( uint8_t prediv, uint8_t postdiv );
+
+      void attachInterrupt(void (*isr)(void));
+      void attachInterrupt(void (*isr)(void), uint8_t prio);
+      void detachInterrupt(void);
+      void clearInterrupt(uint8_t source, uint8_t flag_num);
+      void enableInterruptSource(uint8_t source, uint8_t flag);
+      void disableInterruptSource(uint8_t source, uint8_t flag_num);
+      uint32_t readInterruptFlags(uint8_t source);
+      bool readInterruptFlags(uint8_t source, uint8_t flag_num);
 
 };
 

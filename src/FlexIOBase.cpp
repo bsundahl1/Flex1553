@@ -224,16 +224,16 @@ uint8_t FlexIO_Base::get_params(uint8_t param_type)
       // TRIGGERs : PINs : TIMERs : SHIFTERs
       // TRIGGER refers to the number of EXTERNAL triggers, have not found any
       // documentation on this yet
-      case FLEXIO_PARAM_SHIFTERS:
+      case FLEXIO_SHIFTERS:
          return(m_flex->PARAM & 0xff);
          break;
-      case FLEXIO_PARAM_TIMERS:
+      case FLEXIO_TIMERS:
          return((m_flex->PARAM >> 8) & 0xff);
          break;
-      case FLEXIO_PARAM_PINS:
+      case FLEXIO_PINS:
          return((m_flex->PARAM >> 16) & 0xff);
          break;
-      case FLEXIO_PARAM_TRIGGERS:
+      case FLEXIO_TRIGGERS:
          return((m_flex->PARAM >> 24) & 0xff);
          break;
    }
@@ -426,3 +426,120 @@ void FlexIO_Base::get_clock_divider( uint8_t *target_div, uint8_t *pre_div, uint
 //{
 //   return false;
 //}
+
+
+
+// An interrupt routine can be triggered from a timer output or
+// a shifter status flag output. There is only one interrupt vector
+// for each flex module, so it is up to you to verify who tripped
+// the interrupt (if more than on source is enabled)
+void FlexIO_Base::attachInterrupt(void (*isr)(void))
+{
+   int irq = FlexIO_Base::get_irq_num();
+	_VectorsRam[irq + 16] = isr;
+	NVIC_ENABLE_IRQ(irq);
+}
+
+
+void FlexIO_Base::attachInterrupt(void (*isr)(void), uint8_t prio)
+{
+   int irq = FlexIO_Base::get_irq_num();
+	_VectorsRam[irq + 16] = isr;
+	NVIC_ENABLE_IRQ(irq);
+	NVIC_SET_PRIORITY(irq, prio);
+}
+
+
+void FlexIO_Base::detachInterrupt(void)
+{
+	NVIC_DISABLE_IRQ(FlexIO_Base::get_irq_num());
+}
+
+
+void FlexIO_Base::clearInterrupt(uint8_t source, uint8_t flag_num)
+{
+	//DMA_CINT = channel;
+}
+
+
+// Each FlexIO module has one interrupt flag for each timer and one
+// for each shifter. For the RT1062, there are 8 of each.
+// This function sets one FlexIO interrupt flag.
+// @param source    FLEXIO_SHIFTERS or FLEXIO_TIMERS
+// @param flag_num  timer or shifter number [0 to 7]
+void FlexIO_Base::enableInterruptSource(uint8_t source, uint8_t flag_num)
+{
+   noInterrupts();
+   switch(source) {
+      case FLEXIO_SHIFTERS:
+         m_flex->SHIFTSIEN |= 1 << flag_num;
+         break;
+      case FLEXIO_TIMERS:
+         m_flex->TIMIEN |= 1 << flag_num;
+         break;
+   }
+   interrupts();
+}
+
+
+// This function clears one FlexIO interrupt flag
+// @param flag   timer or shifter number [0 to 7]
+// @param source FLEXIO_SHIFTERS or FLEXIO_TIMERS
+void FlexIO_Base::disableInterruptSource(uint8_t source, uint8_t flag_num)
+{
+   noInterrupts();
+   switch(source) {
+      case FLEXIO_SHIFTERS:
+         m_flex->SHIFTSIEN &= ~(1 << flag_num);
+         break;
+      case FLEXIO_TIMERS:
+         m_flex->TIMIEN &= ~(1 << flag_num);
+         break;
+   }
+   interrupts();
+}
+
+
+// This function reads the state of the FlexIO interrupt flags for either the shifters
+// or the timers. Flags which do NOT have interrupts enabled are ignored.
+// @param source FLEXIO_SHIFTERS or FLEXIO_TIMERS
+uint32_t FlexIO_Base::readInterruptFlags(uint8_t source)
+{
+   switch(source) {
+      case FLEXIO_SHIFTERS:
+         return( m_flex->SHIFTSIEN & m_flex->SHIFTSTAT );
+
+      case FLEXIO_TIMERS:
+         return( m_flex->TIMIEN & m_flex->TIMSTAT );
+   }
+   return(0);
+}
+
+
+// Same as above, but returns only a single flag
+bool FlexIO_Base::readInterruptFlags(uint8_t source, uint8_t flag_num)
+{
+   uint32_t flags = FlexIO_Base::readInterruptFlags(source);
+   if( flags & (1 << flag_num))
+      return(true);
+   else
+      return(false);
+}
+
+
+
+inline int FlexIO_Base::get_irq_num(void)
+{
+   int irq;
+
+   // only one interrupt vector per FlexIO module
+   switch(m_flex_num) {
+      case FLEXIO1: irq = IRQ_FLEXIO1; break;
+      case FLEXIO2: irq = IRQ_FLEXIO2; break;
+      case FLEXIO3: irq = IRQ_FLEXIO3; break;
+      default: irq = 0;
+   }
+
+   return(irq);
+}
+

@@ -30,38 +30,29 @@
 // assign flex data line resources to outputs. some of the are used internally
 // others are just brought out for debug. Note that flex FXIO_D[7:0] are reserved
 // for the state machine outputs.
-#define FLEX1_1553TX_PIN_SHFT1_OUT 10    // routes shifter to state machine  (not accessable on teensy pin)
-#define FLEX1_1553TX_PIN_SHFT2_OUT 11    // routes shifter to state machine  (not accessable on teensy pin)
-#define FLEX1_1553TX_PIN_TIM0_OUT  8     // for debug only
-#define FLEX1_1553TX_PIN_TIM2_OUT  12    // for debug only
-#define FLEX1_1553TX_PIN_TIM3_OUT  14    // 1MHz clock routed between timers
-#define FLEX1_1553TX_PIN_TIM5_OUT  15    // for debug only
-#define FLEX1_1553TX_PIN_TIM7_OUT  13    // for debug only
+#define FLEX1_1553TX_D_SHFT1_OUT 10    // routes shifter to state machine  (not accessable on teensy pin)
+#define FLEX1_1553TX_D_SHFT2_OUT 11    // routes shifter to state machine  (not accessable on teensy pin)
+#define FLEX1_1553TX_D_TIM0_OUT  8     // for debug only
+#define FLEX1_1553TX_D_TIM2_OUT  12    // for debug only
+#define FLEX1_1553TX_D_TIM3_OUT  14    // 1MHz clock routed between timers
+#define FLEX1_1553TX_D_TIM5_OUT  15    // for debug only
+#define FLEX1_1553TX_D_TIM7_OUT  13    // for debug only
 
-#define FLEX2_1553TX_PIN_SHFT1_OUT 10    // routes shifter to state machine
-#define FLEX2_1553TX_PIN_SHFT2_OUT 11    // routes shifter to state machine
-#define FLEX2_1553TX_PIN_TIM0_OUT  28    // for debug only
-#define FLEX2_1553TX_PIN_TIM2_OUT  12    // for debug only
-#define FLEX2_1553TX_PIN_TIM3_OUT  16    // 1MHz clock routed between timers
-#define FLEX2_1553TX_PIN_TIM5_OUT  17    // for debug only
-#define FLEX2_1553TX_PIN_TIM7_OUT  18    // for debug only
+#define FLEX2_1553TX_D_SHFT1_OUT 10    // routes shifter to state machine
+#define FLEX2_1553TX_D_SHFT2_OUT 11    // routes shifter to state machine
+#define FLEX2_1553TX_D_TIM0_OUT  28    // for debug only
+#define FLEX2_1553TX_D_TIM2_OUT  12    // for debug only
+#define FLEX2_1553TX_D_TIM3_OUT  16    // 1MHz clock routed between timers
+#define FLEX2_1553TX_D_TIM5_OUT  17    // for debug only
+#define FLEX2_1553TX_D_TIM7_OUT  18    // for debug only
 
-#define FLEX3_1553TX_PIN_SHFT1_OUT 10    // routes shifter to state machine
-#define FLEX3_1553TX_PIN_SHFT2_OUT 11    // routes shifter to state machine
-#define FLEX3_1553TX_PIN_TIM0_OUT  8     // for debug only
-#define FLEX3_1553TX_PIN_TIM2_OUT  12    // for debug only
-#define FLEX3_1553TX_PIN_TIM3_OUT  13    // 1MHz clock routed between timers
-#define FLEX3_1553TX_PIN_TIM5_OUT  14    // for debug only
-#define FLEX3_1553TX_PIN_TIM7_OUT  15    // for debug only
-
-// manually sellect which set to use
-#define FLEX_1553TX_PIN_SHFT1_OUT    FLEX2_1553TX_PIN_SHFT1_OUT
-#define FLEX_1553TX_PIN_SHFT2_OUT    FLEX2_1553TX_PIN_SHFT2_OUT
-#define FLEX_1553TX_PIN_TIM0_OUT     FLEX2_1553TX_PIN_TIM0_OUT
-#define FLEX_1553TX_PIN_TIM2_OUT     FLEX2_1553TX_PIN_TIM2_OUT
-#define FLEX_1553TX_PIN_TIM3_OUT     FLEX2_1553TX_PIN_TIM3_OUT
-#define FLEX_1553TX_PIN_TIM5_OUT     FLEX2_1553TX_PIN_TIM5_OUT
-#define FLEX_1553TX_PIN_TIM7_OUT     FLEX2_1553TX_PIN_TIM7_OUT
+#define FLEX3_1553TX_D_SHFT1_OUT 10    // routes shifter to state machine
+#define FLEX3_1553TX_D_SHFT2_OUT 11    // routes shifter to state machine
+#define FLEX3_1553TX_D_TIM0_OUT  8     // for debug only
+#define FLEX3_1553TX_D_TIM2_OUT  12    // for debug only
+#define FLEX3_1553TX_D_TIM3_OUT  13    // 1MHz clock routed between timers
+#define FLEX3_1553TX_D_TIM5_OUT  14    // for debug only
+#define FLEX3_1553TX_D_TIM7_OUT  15    // for debug only
 
 
 
@@ -77,6 +68,45 @@ FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, bool pair1, bool pair2, bool pair
       m_pair[i].f_negPin = (i * 2) + 1;
       m_pair[i].t_posPin = getTeensyPin(  i * 2 );    // teensy pin numbers
       m_pair[i].t_negPin = getTeensyPin( (i * 2) + 1 );
+   }
+
+   // assign FlexIO_Dxx lines based on which FlexIO is used
+   // most of these are just used for debug, so it is important
+   // that they come out to usable Teensy pins.
+   switch(flex_num) {
+      case FLEXIO1:
+         flexio_d_shift1_out = FLEX1_1553TX_D_SHFT1_OUT;
+         flexio_d_shift2_out = FLEX1_1553TX_D_SHFT2_OUT;
+         flexio_d_tim0_out   = FLEX1_1553TX_D_TIM0_OUT;
+         flexio_d_tim2_out   = FLEX1_1553TX_D_TIM2_OUT;
+         flexio_d_tim3_out   = FLEX1_1553TX_D_TIM3_OUT;
+         flexio_d_tim5_out   = FLEX1_1553TX_D_TIM5_OUT;
+         flexio_d_tim7_out   = FLEX1_1553TX_D_TIM7_OUT;
+         pair1 = false;  // not available on flexIO1
+         pair2 = false;
+         break;
+
+      case FLEXIO2:
+         flexio_d_shift1_out = FLEX2_1553TX_D_SHFT1_OUT;
+         flexio_d_shift2_out = FLEX2_1553TX_D_SHFT2_OUT;
+         flexio_d_tim0_out   = FLEX2_1553TX_D_TIM0_OUT;
+         flexio_d_tim2_out   = FLEX2_1553TX_D_TIM2_OUT;
+         flexio_d_tim3_out   = FLEX2_1553TX_D_TIM3_OUT;
+         flexio_d_tim5_out   = FLEX2_1553TX_D_TIM5_OUT;
+         flexio_d_tim7_out   = FLEX2_1553TX_D_TIM7_OUT;
+         pair3 = false;  // not available on flexIO2
+         pair4 = false;
+         break;
+
+      case FLEXIO3:
+         flexio_d_shift1_out = FLEX3_1553TX_D_SHFT1_OUT;
+         flexio_d_shift2_out = FLEX3_1553TX_D_SHFT2_OUT;
+         flexio_d_tim0_out   = FLEX3_1553TX_D_TIM0_OUT;
+         flexio_d_tim2_out   = FLEX3_1553TX_D_TIM2_OUT;
+         flexio_d_tim3_out   = FLEX3_1553TX_D_TIM3_OUT;
+         flexio_d_tim5_out   = FLEX3_1553TX_D_TIM5_OUT;
+         flexio_d_tim7_out   = FLEX3_1553TX_D_TIM7_OUT;
+         break;
    }
 
    m_pair[0].allowed = pair1;
@@ -147,31 +177,31 @@ bool FlexIO_1553TX::begin( void )
          switch(i) {
             case 0:
                Serial.print( "  SHFT1_OUT = FXIO_D" );
-               pin = FLEX_1553TX_PIN_SHFT1_OUT;
+               pin = flexio_d_shift1_out;
                break;
             case 1:
                Serial.print( "  SHFT2_OUT = FXIO_D" );
-               pin = FLEX_1553TX_PIN_SHFT2_OUT;
+               pin = flexio_d_shift2_out;
                break;
             case 2:
                Serial.print( "  TIM0_OUT  = FXIO_D" );
-               pin = FLEX_1553TX_PIN_TIM0_OUT;
+               pin = flexio_d_tim0_out;
                break;
             case 3:
                Serial.print( "  TIM2_OUT  = FXIO_D" );
-               pin = FLEX_1553TX_PIN_TIM2_OUT;
+               pin = flexio_d_tim2_out;
                break;
             case 4:
                Serial.print( "  TIM3_OUT  = FXIO_D" );
-               pin = FLEX_1553TX_PIN_TIM3_OUT;
+               pin = flexio_d_tim3_out;
                break;
             case 5:
                Serial.print( "  TIM5_OUT  = FXIO_D" );
-               pin = FLEX_1553TX_PIN_TIM5_OUT;
+               pin = flexio_d_tim5_out;
                break;
             case 6:
                Serial.print( "  TIM7_OUT  = FXIO_D" );
-               pin = FLEX_1553TX_PIN_TIM7_OUT;
+               pin = flexio_d_tim7_out;
                break;
          }
          Serial.print( pin );
@@ -210,16 +240,16 @@ bool FlexIO_1553TX::config_io_pins(void)
 
    // The rest of this code routs optional outputs to IO pins, primarily for debug.
    // You will normally want to turn this off so that you can use these IO pins
-   // for other purposes. Note that the defines refer to FlexIO data lines (FXIO_Dxx),
-   // and are translated to Teensy pins.
+   // for other purposes. Note that the flexio_d_ variables refer to FlexIO data
+   // lines (FXIO_Dxx), and are translated to Teensy pins.
    #ifdef FLEX_DEBUG
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_SHFT1_OUT) );
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_SHFT2_OUT) );
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_TIM0_OUT)  );
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_TIM2_OUT)  );
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_TIM3_OUT)  );
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_TIM5_OUT)  );
-      setPinMux( getTeensyPin(FLEX_1553TX_PIN_TIM7_OUT)  );
+      setPinMux( getTeensyPin(flexio_d_shift1_out) );
+      setPinMux( getTeensyPin(flexio_d_shift2_out) );
+      setPinMux( getTeensyPin(flexio_d_tim0_out)  );
+      setPinMux( getTeensyPin(flexio_d_tim2_out)  );
+      setPinMux( getTeensyPin(flexio_d_tim3_out)  );
+      setPinMux( getTeensyPin(flexio_d_tim5_out)  );
+      setPinMux( getTeensyPin(flexio_d_tim7_out)  );
    #endif
    return(true);
 }
@@ -263,7 +293,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
            //FLEXIO_SHIFTCTL_TIMPOL       |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT1_OUT )   |
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift1_out )   |
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
 
@@ -278,7 +308,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
            //FLEXIO_SHIFTCTL_TIMPOL       |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT1_OUT )   |
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift1_out )   |
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
 
@@ -294,7 +324,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
            //FLEXIO_SHIFTCTL_TIMPOL       |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT1_OUT )   |
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift1_out )   |
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
 
@@ -310,7 +340,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
            //FLEXIO_SHIFTCTL_TIMPOL       |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT1_OUT )   |
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift1_out )   |
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
 
@@ -326,7 +356,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
            //FLEXIO_SHIFTCTL_TIMPOL       |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT1_OUT )   |
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift1_out )   |
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
 
@@ -357,7 +387,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 1
            // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // pin output enabled
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT1_OUT )   |        // FLEXIO pin 10    Teensy pin n/a
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift1_out )   |        // FLEXIO pin 10    Teensy pin n/a
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 2 );              // transmit mode
 
@@ -377,7 +407,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 1
            // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
            FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // pin output enabled
-           FLEXIO_SHIFTCTL_PINSEL( FLEX_1553TX_PIN_SHFT2_OUT )   |        // FLEXIO pin 11    Teensy pin n/a
+           FLEXIO_SHIFTCTL_PINSEL( flexio_d_shift2_out )   |        // FLEXIO pin 11    Teensy pin n/a
            // FLEXIO_SHIFTCTL_PINPOL      |        // active high
            FLEXIO_SHIFTCTL_SMOD( 2 );              // transmit mode
 
@@ -401,7 +431,7 @@ bool FlexIO_1553TX::config_flex( void )
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active low
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM0_OUT )     |        // timer pin 13, Teensy pin 49 (for debug only)
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim0_out )     |        // timer pin (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
 
@@ -430,7 +460,7 @@ bool FlexIO_1553TX::config_flex( void )
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 0 )      |        // timer pin output disabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM3_OUT )   |   // used as the clock input
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim3_out )   |   // used as the clock input
            FLEXIO_TIMCTL_PINPOL        |           // timer pin active low
            FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
 
@@ -467,7 +497,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM2_OUT )     |        // timer pin 12 (wired to state machine)
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim2_out )     |        // timer pin 12 (wired to state machine)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer
 
@@ -496,7 +526,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM3_OUT )     |        // timer pin 19 (for debug only)
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim3_out )     |        // timer pin (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
 
@@ -533,7 +563,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 0 )      |        // timer pin is an input
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM3_OUT )     |        // pin input from 1MHz clock
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim3_out )     |        // pin input from 1MHz clock
            FLEXIO_TIMCTL_PINPOL           |        // timer pin active low
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
 
@@ -564,7 +594,7 @@ bool FlexIO_1553TX::config_flex( void )
            FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM5_OUT )     |        // timer pin 19 (for debug only)
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim5_out )     |        // timer pin 19 (for debug only)
            FLEXIO_TIMCTL_PINPOL           |        // timer pin active low
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
 
@@ -592,7 +622,7 @@ bool FlexIO_1553TX::config_flex( void )
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( FLEX_1553TX_PIN_TIM7_OUT )      |        // timer pin 9 (for debug only)
+           FLEXIO_TIMCTL_PINSEL( flexio_d_tim7_out )      |        // timer pin 9 (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
 
@@ -688,9 +718,7 @@ int FlexIO_1553TX::send( uint8_t sync, uint16_t data )
    if( status == 0 ) {
       // the shifter sends LSB first, using BIS function reverses the bit
       // order of the data, so effectively, we are sending MSB first.
-      //FLEXIO1_SHIFTBUFBIS1 = shiftData;  // start transimision
       m_flex->SHIFTBUFBIS[1] = shiftData; // start transimision
-      //FLEXIO1_TIMSTAT   = 7;          // reset timer status bits, these are used to determine when
       m_flex->TIMSTAT = 7;    // reset timer status bits, these are used to determine when
                               // transmission is complete
       m_just_configured = false;

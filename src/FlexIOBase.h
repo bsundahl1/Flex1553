@@ -71,7 +71,7 @@ class FlexIO_Base
 {
    protected:
       IMXRT_FLEXIO_t *m_flex;    // pointer to the FlexIO hardware
-      uint8_t  m_flex_num;       // FlexIO module being used
+      uint8_t  m_flex_num;       // FlexIO module being used [1 to 3]
       uint8_t  m_pll_divider;    // Sets divider for FLexIO Clock from 480MHz PLL (range: 4 to 64)
 
       //bool config_clock( void );  // configures PLL module

@@ -107,33 +107,51 @@ class FlexIO_1553RX: public FlexIO_Base
       int8_t   m_t_Pin;  // Teensy pin
       int8_t   m_altFlex;
       int8_t   m_altGpio;
+      int8_t   m_rxDataRdPtr = 0;
 
       bool config_flex( void );
       bool config_io_pins( void );
       uint8_t parity( uint32_t data );
+
       //void isr1553Rx(void);
+      //static void isrFlex3_1553Rx(void);
 
 
    public:
+      //static volatile int syncPattern3; // = FLEX1553_COMMAND_WORD;
+
       FlexIO_1553RX(uint8_t flex_num, uint8_t rxPin);
 
       // Configure the FlexIO hardware and check for configuration errors
       bool begin( void );
 
-      // Read RX data from FlexIO
-      unsigned long read_data( void );
+      // disables the FlexIO interrupt, which effectively disables the receiver
+      void disable(void);
 
-      // Read RX bit faults from FlexIO
-      unsigned long read_faults( void );
+      // enables the FlexIO interrupt and flushes buffer to get ready for new RX data
+      void enable(void);
 
-      // Read FlexIO status registers
-      unsigned long get_status( void );
+      // Clear buffer and get ready for new RX packet
+      void flush(void);
+
+      // Number of words left in the buffer to read
+      uint8_t available(void);
+
+      // Total Number of words which have been received into the buffer
+      uint8_t word_count(void);
+
+      // Read one word from RX buffer
+      int32_t read(void);
+
 
       // Write the sync pattern to the FlexIO hardware
       void set_sync( uint8_t sync_type );
 
-      // for debug
+      // for debug only - may have side effects
       int set_trigger( unsigned int pattern, unsigned int mask );
+      unsigned long read_data( void );   // Read directly from FlexIO shifter
+      unsigned long read_faults( void ); // Read directly from FlexIO shifter
+      unsigned long get_status( void );  // Read FlexIO status registers
 
 };
 
@@ -147,10 +165,10 @@ class FlexIO_1553RX: public FlexIO_Base
 //unsigned long Flex1553TX_get_status( void );
 //int Flex1553TX_set_channel( int ch );
 
-int Flex2_1553TX_config(void);
-int Flex2_1553TX_send( uint8_t type, uint16_t data );
-int Flex2_1553TX_transmitter_busy( void );
-int Flex2_1553TX_get_status( void );
+//int Flex2_1553TX_config(void);
+//int Flex2_1553TX_send( uint8_t type, uint16_t data );
+//int Flex2_1553TX_transmitter_busy( void );
+//int Flex2_1553TX_get_status( void );
 
 //int Flex3_1553RX_config(void);
 //int Flex1553RX_trigger( unsigned int trigger, unsigned int pattern );
@@ -159,14 +177,14 @@ int Flex2_1553TX_get_status( void );
 //unsigned long Flex3_1553RX_read_data( void );
 //unsigned long Flex3_1553RX_read_faults( void );
 
-int Flex1_1553Sync_config1(void);
-int Flex1_1553Sync_config2(void);
-int Flex1_1553Sync_config3(void);
-int Flex1_1553Sync_config4(void);
+//int Flex1_1553Sync_config1(void);
+//int Flex1_1553Sync_config2(void);
+//int Flex1_1553Sync_config3(void);
+//int Flex1_1553Sync_config4(void);
 int Flex1_1553Sync_config5(void);
 //int Flex3_1553Sync_config(void);
-int Flex1_writeShifter3( unsigned long config );
-uint32_t Flex1_readShifter3(void);
+//int Flex1_writeShifter3( unsigned long config );
+//uint32_t Flex1_readShifter3(void);
 
 
 

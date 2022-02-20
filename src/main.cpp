@@ -19,7 +19,7 @@ unsigned long lastLoops = 0;
 bool ledState  = false;
 //uint32_t pattern[] = {0x12345678, 0x9abcdef0, 0xb0119876, 0x543210ab, 0xdeadbeef};
 uint32_t pattern[] = {0x01020304, 0x05060708, 0x090a0b0c, 0x0d0e0f10, 0x11121314};
-int syncPattern = FLEX1553_COMMAND_WORD;
+//int syncPattern = FLEX1553_COMMAND_WORD;
 
 //LaParser ser1Parser(1);
 CmdParser cmdParser;
@@ -30,7 +30,7 @@ FlexIO_1553TX flex1553TX( FLEXIO2, true, false, false, false );
 FlexIO_1553RX flex1553RX( FLEXIO3, rx1553Pin );
 
 void processSerialCommand( char *buffer );
-static void isr1553Rx(void);
+//static void isr1553Rx(void);
 
 
 // the setup() method runs once, when the sketch starts
@@ -63,9 +63,9 @@ void setup() {
 
    analogWrite(pwmPin, 128);
 
-   flex1553RX.attachInterrupt(isr1553Rx);
-   flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 1);
-   flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 3);
+   //flex1553RX.attachInterrupt(isr1553Rx);
+   //flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 1);
+   //flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 3);
 }
 
 
@@ -288,16 +288,25 @@ void processSerialCommand( char *buffer )
          //Serial.print( "RX: 0x" );
          //Serial.print( Flex3_1553RX_read_data(), HEX );
          //Serial.print( flex1553RX.read_data(), HEX );
-         uint32_t rx_data = flex1553RX.read_data();
-         Serial.print( "RX Sync: " );
-         Serial.print( (rx_data >> 17) & 0x07 );
-         Serial.print( " data: " );
-         Serial.print( (rx_data >> 1)  & 0xffff, HEX );
-         Serial.print( " parity: " );
-         Serial.print( rx_data & 0x01 );
-         Serial.print( "  fault: 0x" );
-         Serial.print( flex1553RX.read_faults(), HEX );
-         Serial.println();
+         //uint32_t rx_data = flex1553RX.read_data();
+         int32_t rx_data = flex1553RX.read();
+         //Serial.print( "RX Sync: " );
+         //Serial.print( (rx_data >> 17) & 0x07 );
+         if(rx_data == -1)
+            Serial.println( " no data" );
+         else {
+            Serial.print( " data: " );
+            Serial.print( rx_data & 0xffff, HEX );
+            if(rx_data & 0x4000000)
+               Serial.print( ", parity error" );
+            if(rx_data & 0x2000000)
+               Serial.print( ", transition faults" );
+
+            //Serial.print( rx_data & 0x01 );
+            //Serial.print( "  fault: 0x" );
+            //Serial.print( flex1553RX.read_faults(), HEX );
+            Serial.println();
+         }
       }
       else if( cmdParser.equalCommand("Status") ) {
          Serial.print( "status TX1 0x" );
@@ -305,31 +314,6 @@ void processSerialCommand( char *buffer )
          Serial.print( "  RX 0x" );
          Serial.println( flex1553RX.get_status(), HEX );
       }
-      else if( cmdParser.equalCommand("SetS3") ) {  // write to shifter3 buffer
-         if( cmdParser.getParamCount() >= 1 ) {
-            //ulVal = atoi( cmdParser.getCmdParam(1) );
-            ulVal = cmdParser.getCmdParamAsInt(1);
-            Serial.print( "status TX1 0x" );
-            Serial.println( ulVal, HEX );
-            Flex1_writeShifter3( ulVal );
-         }
-      }
-      else if( cmdParser.equalCommand("readS3") ) { // read from shifter3 buffer
-         Serial.print( "RX: 0x" );
-         Serial.println( Flex1_readShifter3(), HEX );
-         //Flex1_writeShiftConfig3( ulVal );
-      }
-      //else if( cmdParser.equalCommand("Pins") ) {
-      //  ulVal = 0;
-      //  //if( cmdParser.getParamCount() >= 1 )
-      //  //  iVal = atoi( cmdParser.getCmdParam(1) );
-      //  //else
-      //  //  iVal = 1;
-      //
-      //  ulVal = flex1553TX.get_pin_states();
-      //  Serial.print( "Flex Pins: 0x" );
-      //  Serial.println( ulVal, HEX);
-      //}
 
       // ************* general FlexIO stuff **********
       else if( cmdParser.equalCommand("GetParams") ) {
@@ -475,26 +459,26 @@ void processSerialCommand( char *buffer )
 
 
 
-static void isr1553Rx(void)
-{
-   int flags = flex1553RX.readInterruptFlags(FLEXIO_SHIFTERS);
-
-   if(flags & 0x08) { // found sync pattern
-      flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 3);  // not needed in Match Continuous mode?
-      if(syncPattern == FLEX1553_COMMAND_WORD) { // change to data sync
-         flex1553RX.set_sync(FLEX1553_DATA_WORD);
-      }
-
-      Serial.println("found sync");
-   }
-
-   if(flags & 0x02) { // received one word
-
-      uint32_t rx_data = flex1553RX.read_data();  // this also clears the interrupt flag
-      //flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 1);
-
-      Serial.print("received word: ");
-      Serial.println(rx_data >> 1, HEX);
-   }
-
-}
+//static void isr1553Rx(void)
+//{
+//   int flags = flex1553RX.readInterruptFlags(FLEXIO_SHIFTERS);
+//
+//   if(flags & 0x08) { // found sync pattern
+//      flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 3);  // not needed in Match Continuous mode?
+//      if(syncPattern == FLEX1553_COMMAND_WORD) { // change to data sync
+//         flex1553RX.set_sync(FLEX1553_DATA_WORD);
+//      }
+//
+//      Serial.println("found sync");
+//   }
+//
+//   if(flags & 0x02) { // received one word
+//
+//      uint32_t rx_data = flex1553RX.read_data();  // this also clears the interrupt flag
+//      //flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 1);
+//
+//      Serial.print("received word: ");
+//      Serial.println(rx_data >> 1, HEX);
+//   }
+//
+//}

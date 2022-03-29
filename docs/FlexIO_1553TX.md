@@ -53,3 +53,19 @@ instantiating FlexIO_1553TX().
 
    https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf
    https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf
+
+
+## State machine
+
+If you have never seen a state diagram before, this may look intimidating,
+but is really is fairly simple. Each circle represents a state. In FlexIO,
+each state is a shifter, and the state number is the number of the shifter
+used for that state. If hat already sounds confusing, just remember that
+when a shifter is in state machine mode, it is not used as a shifter, but
+as a 32-bit register to hold the configuration for that state.
+
+I always use state 0 as the initial state. You do not have to use state 0,
+but this is the default, so why fight it? For the other states I use 4 thru
+7 (there are only 8 shifters, thus only 8 possible states). Shifter1 and 2
+I actually use as shifters, and Shifter3 is unused.
+

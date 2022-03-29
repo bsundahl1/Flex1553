@@ -3,6 +3,7 @@
 #include <CmdParser.h>
 #include <Flex1553.h>
 #include <PatternGen.h>
+#include "MIL1553.h"
 
 //#include <TeensyDebug.h>
 //#pragma GCC optimize ("O0")
@@ -12,7 +13,7 @@
 
 const int ledPin = 13;
 const int pwmPin = 14;
-const int rx1553Pin = 40;
+const int rx1553Pin = 41;
 unsigned long loopCount = 0;
 unsigned long loopsPerSec = 0;
 unsigned long lastLoops = 0;
@@ -26,8 +27,10 @@ CmdParser cmdParser;
 CmdBuffer<64> cmdBuffer1;
 
 // FlexIO
-FlexIO_1553TX flex1553TX( FLEXIO2, true, false, false, false );
-FlexIO_1553RX flex1553RX( FLEXIO3, rx1553Pin );
+//FlexIO_1553TX flex1553TX( FLEXIO2, true, false, false, false );
+FlexIO_1553TX flex1553TX(FLEXIO2, FLEX1553_PINPAIR_1, FLEX1553_PINPAIR_2);
+FlexIO_1553RX flex1553RX(FLEXIO3, rx1553Pin);
+MIL_1553_BC   busCont1553(&flex1553TX, &flex1553RX, NULL);
 
 void processSerialCommand( char *buffer );
 //static void isr1553Rx(void);
@@ -237,8 +240,9 @@ void processSerialCommand( char *buffer )
          else
            iVal = 2;
 
-         // this sets up the receiver watch for a command word
-         flex1553RX.set_sync(FLEX1553_COMMAND_WORD);
+         // this sets up the receiver to watch for a command word
+         flex1553RX.flush();
+         //flex1553RX.set_sync(FLEX1553_COMMAND_WORD);
 
          //iVal = Flex2_1553TX_send( FLEX1553_COMMAND_WORD, 0x1234 );
          Serial.print( "cmd ret:  " );     // RTA, SA, WC

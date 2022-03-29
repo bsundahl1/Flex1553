@@ -8,24 +8,24 @@
 //
 
 // Bug list
-//   startup messages not printing - fixed - need to wait for serial port to connect
-//   FLEX01 pair2 always seems to be enabled
-//   need to finish config_io_pins - done
+//  resolved: startup messages not printing - fixed - need to wait for serial port to connect
+//  resolved: FLEX01 pair2 always seems to be enabled - initial conditions not set right
+//  resolved: need to finish config_io_pins
+//  resolved: fixed bug in state machine table causing output pair 2 to always be low
+
 
 // Optional build flags:
-#define FLEX_PRINT_MESSAGES   // uncomment to print startup messages to serial port
-#define FLEX_DEBUG            // uncomment to bring out debug pins
-//#define FLEX02_DEBUG  // uncomment to bring out debug pins
-#define FLEX03_DEBUG  // uncomment to bring out debug pins
-//#define FLEX01_TX_CHB // enable transmit on both A and B channels
-   // if not defined, only channel A output pins will be used
+#define FLEX_PRINT_MESSAGES // uncomment to print startup messages to serial port.
+                              // note that to see these messages, you must wait for the serial
+                              // port to connect in setup() :
+                              //    Serial.begin(115200);
+                              //    while(!Serial);
+
+//#define FLEX_DEBUG          // uncomment to bring out debug pins.
+                              // You will normally want to turn this off so that you can use
+                              // these IO pins for other purposes.
 
 
-
-
-/***************************************************************************************
-*    Start of 1553 TX Class
-***************************************************************************************/
 
 // assign flex data line resources to outputs. some of the are used internally
 // others are just brought out for debug. Note that flex FXIO_D[7:0] are reserved
@@ -34,9 +34,9 @@
 #define FLEX1_1553TX_D_SHFT2_OUT 11    // routes shifter to state machine  (not accessable on teensy pin)
 #define FLEX1_1553TX_D_TIM0_OUT  8     // for debug only
 #define FLEX1_1553TX_D_TIM2_OUT  12    // for debug only
-#define FLEX1_1553TX_D_TIM3_OUT  14    // 1MHz clock routed between timers
-#define FLEX1_1553TX_D_TIM5_OUT  15    // for debug only
-#define FLEX1_1553TX_D_TIM7_OUT  13    // for debug only
+#define FLEX1_1553TX_D_TIM3_OUT  13    // 1MHz clock routed between timers
+#define FLEX1_1553TX_D_TIM5_OUT  14    // for debug only
+#define FLEX1_1553TX_D_TIM7_OUT  15    // for debug only
 
 #define FLEX2_1553TX_D_SHFT1_OUT 10    // routes shifter to state machine
 #define FLEX2_1553TX_D_SHFT2_OUT 11    // routes shifter to state machine
@@ -56,18 +56,36 @@
 
 
 
+/***************************************************************************************
+*    Start of 1553 TX Class
+***************************************************************************************/
 
 // Class constructor
-FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, bool pair1, bool pair2, bool pair3, bool pair4)
+//FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, bool pair1, bool pair2, bool pair3, bool pair4)
+FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, int8_t pinPairA, int8_t pinPairB)
    :FlexIO_Base(flex_num, 40.0)
 {
+   m_chanToPinPair[FLEX1553_CH_A] = -1;
+   m_chanToPinPair[FLEX1553_CH_B] = -1;
+
    // initialize pin pair structures
    for( int i=0; i<4; i++ ) {
-      m_pair[i].enabled  = false;
+      //m_pair[i].enabled  = false;
+      m_pair[i].allowed  = false;
       m_pair[i].f_posPin =  i * 2;     // flex pin number are in order from 0 to 7
       m_pair[i].f_negPin = (i * 2) + 1;
       m_pair[i].t_posPin = getTeensyPin(  i * 2 );    // teensy pin numbers
       m_pair[i].t_negPin = getTeensyPin( (i * 2) + 1 );
+   }
+
+   // if a valid pin pair was specified, assign
+   if(pinPairA >= FLEX1553_PINPAIR_1 && pinPairA <= FLEX1553_PINPAIR_4) {
+      m_pair[pinPairA].allowed = true;
+      m_chanToPinPair[FLEX1553_CH_A] = pinPairA;
+   }
+   if(pinPairB >= FLEX1553_PINPAIR_1 && pinPairB <= FLEX1553_PINPAIR_4) {
+      m_pair[pinPairB].allowed = true;
+      m_chanToPinPair[FLEX1553_CH_B] = pinPairB;
    }
 
    // assign FlexIO_Dxx lines based on which FlexIO is used
@@ -82,8 +100,8 @@ FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, bool pair1, bool pair2, bool pair
          flexio_d_tim3_out   = FLEX1_1553TX_D_TIM3_OUT;
          flexio_d_tim5_out   = FLEX1_1553TX_D_TIM5_OUT;
          flexio_d_tim7_out   = FLEX1_1553TX_D_TIM7_OUT;
-         pair1 = false;  // not available on flexIO1
-         pair2 = false;
+         m_pair[0].allowed = false;  // not available on flexIO1
+         m_pair[1].allowed = false;
          break;
 
       case FLEXIO2:
@@ -94,8 +112,8 @@ FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, bool pair1, bool pair2, bool pair
          flexio_d_tim3_out   = FLEX2_1553TX_D_TIM3_OUT;
          flexio_d_tim5_out   = FLEX2_1553TX_D_TIM5_OUT;
          flexio_d_tim7_out   = FLEX2_1553TX_D_TIM7_OUT;
-         pair3 = false;  // not available on flexIO2
-         pair4 = false;
+         m_pair[2].allowed = false;  // not available on flexIO2
+         m_pair[3].allowed = false;
          break;
 
       case FLEXIO3:
@@ -109,14 +127,10 @@ FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, bool pair1, bool pair2, bool pair
          break;
    }
 
-   m_pair[0].allowed = pair1;
-   m_pair[1].allowed = pair2;
-   m_pair[2].allowed = pair3;
-   m_pair[3].allowed = pair4;
    m_altFlex  = (m_flex_num == 3)? 9 : 4; // FlexIO3 uses ALT9, FLEXIO1 & 2 use ALT4
    m_altGpio  = 5;  // gpio always uses Alt5
    //m_baud_div = 30; // divide from 30MHz to 1MHz
-   m_chan = -1;
+   m_chan = FLEX1553_CH_A;
    m_just_configured = false;
 }
 
@@ -233,9 +247,12 @@ bool FlexIO_1553TX::config_io_pins(void)
          digitalWrite(m_pair[i].t_negPin, false);
          pinMode(m_pair[i].t_posPin, OUTPUT);      // and configure as outputs
          pinMode(m_pair[i].t_negPin, OUTPUT);
-         setPinMux(m_pair[i].t_posPin);            // and set the PinMux to FlexIO
-         setPinMux(m_pair[i].t_negPin);
+         //if(i == m_chanToPinPair[FLEX1553_CH_A]) { // if this is channel A
+         //   setPinMux(m_pair[i].t_posPin);         // set the PinMux to FlexIO
+         //   setPinMux(m_pair[i].t_negPin);
+         //}
       }
+      set_channel( FLEX1553_CH_A );  // enable channel A as output
    }
 
    // The rest of this code routs optional outputs to IO pins, primarily for debug.
@@ -374,10 +391,10 @@ bool FlexIO_1553TX::config_flex( void )
 
    // load state lookup table               output  : next state
    m_flex->SHIFTBUF[0] =  0x009E7000U;  //  0000 0000 : 100 111 100 111 000 000 000 000b
-   m_flex->SHIFTBUF[4] =  0x51DADDADU;  //  0101 0101 : 110 110 101 101 110 110 101 101b
-   m_flex->SHIFTBUF[7] =  0xA2B76B76U;  //  1010 1010 : 101 101 110 110 101 101 110 110b
-   m_flex->SHIFTBUF[5] =  0x519E7000U;  //  0101 0101 : 100 111 100 111 000 000 000 000b
-   m_flex->SHIFTBUF[6] =  0xA29E7000U;  //  1010 1010 : 100 111 100 111 000 000 000 000b
+   m_flex->SHIFTBUF[4] =  0x55DADDADU;  //  0101 0101 : 110 110 101 101 110 110 101 101b
+   m_flex->SHIFTBUF[7] =  0xAAB76B76U;  //  1010 1010 : 101 101 110 110 101 101 110 110b
+   m_flex->SHIFTBUF[5] =  0x559E7000U;  //  0101 0101 : 100 111 100 111 000 000 000 000b
+   m_flex->SHIFTBUF[6] =  0xAA9E7000U;  //  1010 1010 : 100 111 100 111 000 000 000 000b
 
    // setup data shifter 1 **************************************************
    // this is the data shifter. writing data to SHIFTBUF1 will trigger the transmit
@@ -795,32 +812,72 @@ unsigned long FlexIO_1553TX::get_status( void )
 
 // Controls the pin MUX to enable or disable the 1553 outputs.
 // If transmitter is busy, this will wait for it to empty before changing the outputs.
-// @param  ch:    0=transmit on pair 1, 1=transmit on pair 2, etc,
-//                4=transimt on all allowed channels
+// @param  ch:    0=all channels off
+//                1=transmit on channel A
+//                2=transmit on channel B
+//                4=transimt on both channels
 //                any other value will disable all channels
 // @return error code: 0=success, -1=Flex clock disabled, -2=timeout, -3=illegal configuration
-int FlexIO_1553TX::set_channel( int ch )
+int FlexIO_1553TX::set_channel( int8_t ch )
 {
    uint32_t time;
+   bool    chA_on, chB_on;
+   int8_t  chPairA = m_chanToPinPair[FLEX1553_CH_A];  // this is an index into the m_pair[] array of structures
+   int8_t  chPairB = m_chanToPinPair[FLEX1553_CH_B];
 
    // this function changes the pin MUX to enable or disable the
    // outputs from the 1553 state machine. When enabled, these two
    // differential outputs have identical information on them, and
    // when disabled, they have zeros from the GPIO drivers.
-   // Their only purpose is to switch between two different TX circuits
+   // Their only purpose is to switch between two different TX
+   // hardware circuits.
 
-   //#ifndef FLEX01_TX_CHB
-   //  return( -3 ); // there is only one channel configured!
-   //#endif
 
-    if( ch == m_chan )
-       return( 0 );   // no change needed
+   //if( ch == m_chan )
+   //   return( 0 );   // no change needed
 
-    if( ch > 4)
-      return -3;  // out of range
+   switch(ch)
+   {
+      case 0:
+         chA_on = false;
+         chB_on = false;
+         break;
+      case FLEX1553_CH_A:
+         chA_on = true;
+         chB_on = false;
+         break;
+      case FLEX1553_CH_B:
+         chA_on = false;
+         chB_on = true;
+         if(chPairB == -1)
+            return -3; // channel B has not been configured
+         break;
+      case FLEX1553_CH_ALL:
+         chA_on = true;
+         chB_on = true;
+         break;
+      default:
+         return -3;  // invalid input
+   }
 
-    if( ch < 4 && m_pair[ch].allowed == false )
-      return -3;  // trying to set a channel disallowed in constructor
+   // sanity check
+   if(chPairA == -1)
+      return( -3 );  // this should never happen
+   if(chPairB == -1)
+      chB_on = false;
+
+    //if( ch != FLEX1553_CH_A && ch != FLEX1553_CH_B && ch != FLEX1553_CH_ALL )
+    //  return -3;  // invalid input
+
+   // double check that the pin pair is allowed
+   if(chA_on) {
+      if( m_pair[chPairA].allowed == false )
+         return -3;  // this should never happen
+   }
+   if(chB_on) {
+      if( m_pair[chPairB].allowed == false )
+         return -3;  // trying to set a channel disallowed in constructor
+   }
 
    // make sure Flex1 clock is enabled
     if( !clock_running() )
@@ -837,38 +894,40 @@ int FlexIO_1553TX::set_channel( int ch )
       }
    }
 
-   for( int i=0; i<4; i++ ) {
-      if( m_pair[i].allowed ) {
-         if( ch == i || ch == 4 ) {
-            // turn this pair on
-            setPinMux( m_pair[i].t_posPin, m_altFlex);
-            setPinMux( m_pair[i].t_negPin, m_altFlex);
-         }
-         else {
-            // turn this pair off
-            setPinMux( m_pair[i].t_posPin, m_altGpio);
-            setPinMux( m_pair[i].t_negPin, m_altGpio);
-         }
-      }
+   //for( int i=0; i<4; i++ ) {
+   //   if( m_pair[i].allowed ) {
+   //      if( ch == i || ch == 4 ) {
+   //         // turn this pair on
+   //         setPinMux( m_pair[i].t_posPin, m_altFlex);
+   //         setPinMux( m_pair[i].t_negPin, m_altFlex);
+   //      }
+   //      else {
+   //         // turn this pair off
+   //         setPinMux( m_pair[i].t_posPin, m_altGpio);
+   //         setPinMux( m_pair[i].t_negPin, m_altGpio);
+   //      }
+   //   }
+   //}
+
+   if(chA_on) {
+      // turn this pair on
+      setPinMux(m_pair[chPairA].t_posPin, m_altFlex);
+      setPinMux(m_pair[chPairA].t_negPin, m_altFlex);
+   }
+   else {
+      // turn this pair off
+      setPinMux(m_pair[chPairA].t_posPin, m_altGpio);
+      setPinMux(m_pair[chPairA].t_negPin, m_altGpio);
    }
 
-   //if( ch & FLEX1553_CH_A ) { // if Channel A is to be enabled
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO04     Teensy pin 2
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO05     Teensy pin 3
-   //}
-   //else {  // Channel A is to be disabled
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 5;     // GPIO4_IO04   Teensy pin 2
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 5;     // GPIO4_IO05   Teensy pin 3
-   //}
-   //
-   //if( ch & FLEX1553_CH_B ) { // if Channel B is to be enabled
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO06     Teensy pin 4
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO07     Teensy pin 33
-   //}
-   //else {  // Channel B is to be disabled
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 5;     // GPIO4_IO06   Teensy pin 4
-   //  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 5;     // GPIO4_IO07   Teensy pin 33
-   //}
+   if(chB_on) {
+      setPinMux(m_pair[chPairB].t_posPin, m_altFlex);
+      setPinMux(m_pair[chPairB].t_negPin, m_altFlex);
+   }
+   else {
+      setPinMux(m_pair[chPairB].t_posPin, m_altGpio);
+      setPinMux(m_pair[chPairB].t_negPin, m_altGpio);
+   }
 
    m_chan = ch;
    return( 0 );

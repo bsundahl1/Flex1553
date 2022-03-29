@@ -8,16 +8,15 @@ very reliable and fairly fast with a 1Mb/s bit rate. You could consider it
 a predecessor to CAN bus.
 
 On the down side, it is a fairly difficult standard to implement at the
-physical layer and is generally must be done with custom peripheral IC's,
-or in recent years, with an FPGA. FlexIO gives us a new tool to use for
-custom or uncommon protocols. This might not be a military grade solution,
-but it is good enough to communicate with 1553 devices, at least for test
-purposes.
+physical layer and is generally done with custom peripheral IC's, or in
+recent years, with an FPGA. FlexIO gives us a new tool to use for custom or
+uncommon protocols. This might not be a military grade solution, but it is
+good enough to communicate with 1553 devices, at least for test purposes.
 
 
-## FlexIO Configuration
+## FlexIO Configuration Overview
 This is a fairly complex configuration and uses many of the capabilities of
-FlexIO. This circuit can be broken down into three basic sections:
+FlexIO. This circuit can be broken down into four basic sections:
 
  **Sync Detection** continuously scans the incoming data stream for a valid
  1553 sync pattern, and when found, triggers the rest hardware to
@@ -28,9 +27,14 @@ FlexIO. This circuit can be broken down into three basic sections:
  indicate any bit faults found in the input.
 
  **Data capture** just grabs the output from the state machine and triggers
- and interrupt so that software can retrieve the data.
+ an interrupt so that software can retrieve the data.
+
+ **End of Transmission** triggers an interrupt after a packet has been
+ received, allowing software to respond with an and acknowledge packet
+ within the timing window allowed by the 1553 spec.
 
  Each of these is described in detail below.
+
 
 ### Sync Detection
 
@@ -94,8 +98,57 @@ reset the shifter. The timer values dont really matter, as long as Timer4
 toggles faster than Timer3, so that Timer3 never reaches zero.
 
 
-
 ### Demodulation
+
+In normal use, 1553 uses transformer coupling, and this requires that the
+data lines be continuously changing. If it were to stay in one state for
+any length of time, the transformer would saturate and would no longer be
+able hold the logic level. 1553 uses Manchester II encoding to avoid this
+issue. Manchester encoding is a scheme where the logic state is determined
+by a transition (toggle) rather than the voltage level. A change from low
+to high represents a logic 0, and high to low is a logic 1.
+
+One bit time is always 1 microsecond, and a transition always occurs at the
+center of the bit time. So to transmit a series of zeros for example, the
+data line would need to go low at the start of the bit time, so that it can
+transition high at the center (0.5us later) to signal a logic 0, then go
+back to low at the start of the next bit time (0.5us later) to prepare to
+send the next logic 0. My point is that in the way that we normally think
+about computer logic levels, two logic level are required to define a
+single logic state using this encoding. We will need to shift bits on a
+2MHz clock to support a 1Mbit data rate.
+
+The most obvious way to do this is to use software turn each logic state
+into two levels, and to double the number of bits we will transmit. Every
+single data bit would have to be calculated and shifted into place, and we
+would be transferring twice as much data to the hardware. Ugly, but it
+should work.
+
+FlexIO gives us a better way. Using the state machine feature of FlexIO, we
+can make this look more like a normal peripheral, writing the data we want
+to send, and let FlexIO produce the actual output levels.
+
+You might think of a state machine as a very very simple version of a
+microprocessor, only simpler. It has a fixed number of states that that it
+can be in (FlexIO is limited to 8 states), and it can change from one state
+to another based on its inputs, its current state, and a lookup table.
+FlexIO implements a Moore state machine, which means that its outputs
+depend only on the current state. That is really all there is to it.
 
 
 ### Data capture
+
+
+### End of Transmission (EOT)
+
+One issue that software is going to have to deal with is sending the
+acknowledge (STATUS WORD) after a packet has been received. The 1553 spec
+allows a window of 4 to 12us for this response, with a timeout (an error
+condition) of 14us.
+
+The EOT circuit in the FlexIO is a timer which is set to timeout 4us after
+receiving a word, but is reset by each new word received (each new sync
+pattern). So the timeout will not occur until 4us after the transmission
+ends. This timer will trigger an interrupt so that software can handle the
+acknowledge.
+

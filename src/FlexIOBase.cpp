@@ -15,7 +15,7 @@ FlexIO_Base::FlexIO_Base(uint8_t flex_num, float flex_clock_freq)
       case 1:  m_flex = &IMXRT_FLEXIO1_S; break;
       case 2:  m_flex = &IMXRT_FLEXIO2_S; break;
       case 3:  m_flex = &IMXRT_FLEXIO3_S; break;
-      default: m_flex = NULL; flex_num = 0;
+      default: m_flex = NULL; m_flex_num = 0;
    }
 }
 

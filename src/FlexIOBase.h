@@ -1,3 +1,10 @@
+// This is a simple base class to use with a single FlexIO module
+
+// Also check out KurtE's FlexIO library, harder to understand, but more sophisticated
+// https://github.com/KurtE/FlexIO_t4/tree/master/src/FlexIO_t4.cpp
+
+
+
 #pragma once
 
 #include <Arduino.h>
@@ -15,6 +22,9 @@
 #define FLEXIO_TEENSY_PIN_TO_FLEXIO_D  true
 #define FLEXIO_FLEXIO_D_TO_TEENSY_PIN  false
 
+#define FLEXIO1_DEBUG_INT_PIN  32
+#define FLEXIO2_DEBUG_INT_PIN  9
+#define FLEXIO3_DEBUG_INT_PIN  39
 
 /*
 *  Valid pin numbers for FlexIO
@@ -63,18 +73,13 @@
 */
 
 
-// This is a simple base class to use with a single FlexIO module
-
-// Also check out KurtE's FlexIO base class, harder to understand, but more sophisticated
-// and appears to supplort all three flex modules in a single instance.
-// https://github.com/KurtE/FlexIO_t4/tree/master/src/FlexIO_t4.cpp
-
 class FlexIO_Base
 {
    protected:
       IMXRT_FLEXIO_t *m_flex;    // pointer to the FlexIO hardware
       uint8_t  m_flex_num;       // FlexIO module being used [1 to 3]
       uint8_t  m_pll_divider;    // Sets divider for FLexIO Clock from 480MHz PLL (range: 4 to 64)
+
 
       //bool config_clock( void );  // configures PLL module
       //bool configFlex( void );   // configures FlexIO module
@@ -121,6 +126,10 @@ class FlexIO_Base
       */
       //FlexIO_Base(uint8_t flex_num, uint8_t m_pll_divider = 16);
       FlexIO_Base(uint8_t flex_num, float flex_clock_freq = 30);
+
+      //static void isrFlex1_1553(void);
+      //static void isrFlex2_1553(void);
+      //static void isrFlex3_1553(void);
 
       // configure the FlexIO hardware and check for configuration errors
       bool begin( void );
@@ -169,8 +178,16 @@ class FlexIO_Base
       void clearInterrupt(uint8_t source, uint8_t flag_num);
       void enableInterruptSource(uint8_t source, uint8_t flag);
       void disableInterruptSource(uint8_t source, uint8_t flag_num);
+      void disableInterruptSource(uint8_t source);
       uint32_t readInterruptFlags(uint8_t source);
-      bool readInterruptFlags(uint8_t source, uint8_t flag_num);
+      bool readInterruptFlag(uint8_t source, uint8_t flag_num);
+
+
+      bool attachInterruptCallback(void (*callback)(void));
+      void detachInterruptCallback(void);
+      //void enableCallback(void);
+      //void disableCallback(void);
+
 
 };
 

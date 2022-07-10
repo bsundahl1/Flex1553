@@ -1,6 +1,12 @@
 #include <Arduino.h>
 #include <Flex1553.h>
 
+// This class implements a 1553 transmitter in one FlexIO module of the
+// NXP i.MXRT1062 processor. This is a physical layer only, it does not
+// know the meaning of any of the control bits other than parity.
+// There is no synchronization with the receive module.
+
+
 // 7/12/21  change to a 48MHz clock so we can derive 6MHz from timers
 // 9/10/21  reconfigured code to use C++ class instead of standard C
 // 9/20/21  created base class for reusable FlexIO functions
@@ -502,9 +508,9 @@ bool FlexIO_1553TX::config_flex( void )
    // setup flex timer 2 *****************************************************
    // This produced the Enable input to the state machine which
    // will disable the output at the end of the transmission.
-   // This timer produces a .525us delay, which is reset after
+   // This timer produces a .550us delay, which is reset after
    // each edge of Timer1 output (500us edges). Thus, the timer
-   // output will stay high until .525us after Timer1 stops.
+   // output will stay high until .550us after Timer1 stops.
    // clocked from flex clock
    // enabled by Timer1 enable
    // reset by Timer 1 output
@@ -629,6 +635,37 @@ bool FlexIO_1553TX::config_flex( void )
    m_flex->TIMCMP[5]    =   0xffff;
 
 
+   // setup flex timer 6 *****************************************************
+   // this is a delay, triggerd by Timer2
+   // it is always enabled
+   // This is for use as an interrupt source to indicate the end of transmission.
+   // Timer2 actually does define the end of transmission, however it happens before
+   // the receiver finishes capturing the TX data. That is, the Timer2 interrupt
+   // occurs before the RX interrupt. In the firmware, I generally want the RX
+   // interrupt to occur first, thus, this delay.
+   m_flex->TIMCTL[6]    =
+           FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer2 output =(2 * 4) + 3
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 0 )      |        // timer pin output disabled
+           FLEXIO_TIMCTL_PINSEL( 0 )      |        // not used
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+   m_flex->TIMCFG[6]    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // Decrement on Flex clock
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // Timer disabled on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising edge
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+   // divide Flex clock to get 2.0us
+   // time = (79 + 1)/40  = 2.0us
+   m_flex->TIMCMP[6]    =    79;
+
+
      // setup flex timer 7 *****************************************************
    // for debug only
    // this just passes the trigger thru to an IO pin for debug
@@ -662,20 +699,22 @@ bool FlexIO_1553TX::config_flex( void )
 
 
 
-
-
 // Sends one command word on bus, using FlexIO1
 // If transmitter is busy, this will wait for it to become avilable.
 // @param  rdaddress:   address of the device to send to
 // @param  subaddress:  register number to send data to
 // @param  wordcount:   number of data bytes to follow (1 to 32)
 // @return error code:  0=success, -1=Flex clock disabled, -2=timeout
-int FlexIO_1553TX::send_command( byte rtaddress, byte subaddress, byte wordcount )
+int FlexIO_1553TX::send_command_blocking( byte rtaddress, byte subaddress, byte wordcount, byte trDir )
 {
    uint16_t data;
+   int t_r = 0;
 
-   data = (rtaddress & 0x1f) << 11 | (subaddress & 0x1f) << 5 | (wordcount & 0x1f);
-   return( send( FLEX1553_COMMAND_WORD, data) );
+   if(trDir == 1)
+      t_r = 1;
+
+   data = (rtaddress & 0x1f) << 11 | (t_r & 1) << 10 | (subaddress & 0x1f) << 5 | (wordcount & 0x1f);
+   return( send_blocking( FLEX1553_COMMAND_WORD, data) );
 }
 
 
@@ -684,9 +723,9 @@ int FlexIO_1553TX::send_command( byte rtaddress, byte subaddress, byte wordcount
 // If transmitter is busy, this will wait for it to become avilable.
 // @param  data:   16-bit data
 // @return error code: 0=success, -1=Flex clock disabled, -2=timeout
-int FlexIO_1553TX::send_data( uint16_t data )
+int FlexIO_1553TX::send_data_blocking( uint16_t data )
 {
-   return( send( FLEX1553_DATA_WORD, data) );
+   return( send_blocking( FLEX1553_DATA_WORD, data) );
 }
 
 
@@ -694,10 +733,11 @@ int FlexIO_1553TX::send_data( uint16_t data )
 // Generic send command
 // Sends one word on bus, using FlexIO1
 // If transmitter is busy, this will wait for it to become avilable.
+// Times out after 100 microseconds
 // @param  sync:   0=data sync, 1=command or status sync
 // @param  data:   16-bit data
 // @return error code: 0=success, -1=Flex clock disabled, -2=timeout
-int FlexIO_1553TX::send( uint8_t sync, uint16_t data )
+int FlexIO_1553TX::send_blocking( uint8_t sync, uint16_t data )
 {
    uint32_t shiftData;
    uint32_t time;
@@ -742,6 +782,32 @@ int FlexIO_1553TX::send( uint8_t sync, uint16_t data )
    }
 
    return( status );
+}
+
+
+bool FlexIO_1553TX::send( uint8_t sync, uint16_t data )
+{
+   uint32_t shiftData;
+
+   // write output data to shifter
+   // The first three bits form a SYNC pulse, which behave differently than the
+   // data bits. The FlexIO state machine will treat these bit positions special
+   // due to the control bits loaded into SHIFTBUF2, do not use any other codes here.
+   if( sync == FLEX1553_COMMAND_WORD )
+      shiftData =  0xC0000000U; // 110b
+   else
+      shiftData =  0x20000000U; // 001b
+
+   // 20-bit word is placed at the top of the 32-bit shift register
+   shiftData = shiftData | ((uint32_t)data << 13) | ((uint32_t)parity(data) << 12);
+
+   // the shifter sends LSB first, using BIS function reverses the bit
+   // order of the data, so effectively, we are sending MSB first (which is the way my brain works).
+   m_flex->SHIFTBUFBIS[1] = shiftData; // start transimision
+   m_flex->TIMSTAT = 7;    // reset timer status bits, these are used to determine when
+                           // transmission is complete
+
+   return true;
 }
 
 

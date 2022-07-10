@@ -11,7 +11,15 @@ On the down side, it is a fairly difficult standard to implement at the
 physical layer and is generally done with custom peripheral IC's, or in
 recent years, with an FPGA. FlexIO gives us a new tool to use for custom or
 uncommon protocols. This might not be a military grade solution, but it is
-good enough to communicate with 1553 devices, at least for test purposes.
+good enough to provide basic communicate with 1553 devices, at least for
+test purposes.
+
+## Hardware restrictions
+
+There can only be one Flex1553RX or TX instantiation for each FlexIO
+module. In the case of the i.MXRT1062, there are three FlexIO modules, and
+you would typically implement one TX class and one or two RX classes. You
+can not have two instances pointing to the same FlexIO module.
 
 
 ## FlexIO Configuration Overview
@@ -118,7 +126,7 @@ about computer logic levels, two logic level are required to define a
 single logic state using this encoding. We will need to shift bits on a
 2MHz clock to support a 1Mbit data rate.
 
-The most obvious way to do this is to use software turn each logic state
+The most obvious way to do this is to use software to turn each logic state
 into two levels, and to double the number of bits we will transmit. Every
 single data bit would have to be calculated and shifted into place, and we
 would be transferring twice as much data to the hardware. Ugly, but it
@@ -151,4 +159,23 @@ receiving a word, but is reset by each new word received (each new sync
 pattern). So the timeout will not occur until 4us after the transmission
 ends. This timer will trigger an interrupt so that software can handle the
 acknowledge.
+
+### Interrupts
+
+The following interrupts may be used to trigger software routines from a
+FlexIO receiver event.
+
+#### Shifter1 Interrupt: Receiver full
+
+This interrupt will occur after a full word is received, when FlexIO loads
+the word from Shifter1 into the shifter holding register. Software must
+retrieve this word from the holding register before the next word is
+received, to avoid an overrun.
+
+#### Shifter3 Interrupt: Sync Pattern Found
+
+This interrupt will occur when the currently selected sync pattern is
+detected. This may be used to change the sync pattern between received
+words.
+
 

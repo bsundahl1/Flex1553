@@ -1,5 +1,13 @@
 FlexIO 1553 Transmit class
 ==========================
+
+This class implements a 1553 transmitter in one FlexIO module of the NXP
+i.MXRT1062 processor. This is a physical layer only, it sends a SYNC, 16
+data bits, and a parity bit. It does not know about packets, it does not
+know the meaning of any of the control bits other than parity. There is no
+synchronization with the receive module (thus no acknowledge).
+
+
 ## Background
 
 MIL-STD-1553 is a serial communication protocol developed for the military
@@ -60,7 +68,7 @@ instantiating FlexIO_1553TX().
 If you have never seen a state diagram before, this may look intimidating,
 but is really is fairly simple. Each circle represents a state. In FlexIO,
 each state is a shifter, and the state number is the number of the shifter
-used for that state. If hat already sounds confusing, just remember that
+used for that state. If that already sounds confusing, just remember that
 when a shifter is in state machine mode, it is not used as a shifter, but
 as a 32-bit register to hold the configuration for that state.
 
@@ -69,3 +77,29 @@ but this is the default, so why fight it? For the other states I use 4 thru
 7 (there are only 8 shifters, thus only 8 possible states). Shifter1 and 2
 I actually use as shifters, and Shifter3 is unused.
 
+### Interrupts
+
+The following interrupts may be used to trigger software routines from a
+FlexIO transmitter event.
+
+#### Shifter1: Transmitter Empty
+
+This interrupt will occur when FlexIO loads a word from the Shifter1 holding
+register into the transmit shifter. The holding register acts as a one word
+FIFO for the transmitter. This interrupt should be used by the software to
+load the next word to FlexIO for transmit.
+
+#### Timer2: End of Transmit
+
+This interrupt will occur just after the last bit has been sent from the
+transmitter. This occurs at the same time that the transmitter goes into
+tri-state. This can be used to signal the end of a packet, or a bus turnaround
+from TX to RX.
+
+#### Timer6: End of Transmit + 2us
+
+This is the same as Timer2 above, but is delayed by another 2 microseconds.
+This timer has purpose no other than to generate an interrupt.
+It takes an extra half clock (1/2 us) to latch the receive data into the
+receive shifter, so if you need this interrupt to happen **after** the receiver
+has capture the outgoing (loop back) data, use this interrupt instead.

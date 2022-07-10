@@ -5,13 +5,13 @@
 
 // All FlexIO configuration and access is done here.
 // These classes perform the low level reads and writes to the 1553 bus.
-// The SYNC word and parity bit are setup in software, Manchester endoding,
+// The SYNC and parity bit are setup in software, Manchester endoding,
 // bit shifting and SYNC detection are done by FlexIO hardware.
 // This class has no knowledge of the packet format or CONTROL/STATUS word
 // content.
 
 
-// 1553 experiment
+#define FLEX1553_STATUS_WORD    2
 #define FLEX1553_COMMAND_WORD   1
 #define FLEX1553_DATA_WORD      0
 #define FLEX1553_COMMAND_SYNC_PATTERN  0x8001ff00U   // upper 16 bits is the mask, lower 16 bits is the trigger pattern
@@ -23,6 +23,8 @@
 #define FLEX1553_PINPAIR_2 1
 #define FLEX1553_PINPAIR_3 2
 #define FLEX1553_PINPAIR_4 3
+#define FLEX1553_PARITY_ERR_BIT     0x40000000
+#define FLEX1553_FAULT_ERR_BIT      0x20000000
 
 
 typedef struct {
@@ -61,19 +63,20 @@ class FlexIO_1553TX: public FlexIO_Base
 
       bool config_flex( void );
       bool config_io_pins( void );
-      uint8_t parity( uint32_t data );
 
 
    public:
       //   Class Constructor
-      // due to the way that FlexIO uses pins in State Machine mode, these are the only
-      // combinations of pins avaliable for TX (order is positive, negative):
+      // Pins are brought out as differential pairs (order is positive, negative)
+      // which are intended to drive transistors for transformer coupling.
+      // Due to the way that FlexIO uses pins in State Machine mode, these are the
+      // only combinations of pins avaliable for TX.
       // Teensy 4.1
-      //    FlexIO_1          FlexIO_2           FlexIO_3
-      //     pair1: n/a        pair1: 10,12       pair1: 19,18
-      //     pair2: n/a        pair2: 11,13       pair2: 14,15
-      //     pair3: 2,3        pair3: n/a         pair3: 40,41
-      //     pair4: 4,33       pair4: n/a         pair4: 17,16
+      //    FlexIO_1          FlexIO_2           FlexIO_3           define
+      //     pair1: n/a        pair1: 10,12       pair1: 19,18       FLEX1553_PINPAIR_1
+      //     pair2: n/a        pair2: 11,13       pair2: 14,15       FLEX1553_PINPAIR_2
+      //     pair3: 2,3        pair3: n/a         pair3: 40,41       FLEX1553_PINPAIR_3
+      //     pair4: 4,33       pair4: n/a         pair4: 17,16       FLEX1553_PINPAIR_4
       //
       // @param flex_num       [1 to 3]  specifies which of the on-chip FlexIO modules is to be used.
       // @param pinPairA       [0 to 3]  pin pair to use as Channel A output
@@ -96,11 +99,16 @@ class FlexIO_1553TX: public FlexIO_Base
       // in most cases, this should be overridden to stop or pause operation of the flex circuit
       bool disable( void );
 
-      int send( uint8_t type, uint16_t data );
+      // Use the blocking functions if TX interrupts are NOT being used
+      // The function will not return until the word has been sent, or a timeout occurs
+      int send_blocking( uint8_t sync, uint16_t data );
+      int send_command_blocking( byte rtaddress, byte subaddress, byte wordcount, byte trDir );
+      int send_status_blocking( uint8_t sync, uint16_t data );
+      int send_data_blocking( uint16_t data );
 
-      int send_command( byte rtaddress, byte subaddress, byte wordcount );
-      int send_status( uint8_t type, uint16_t data );
-      int send_data( uint16_t data );
+      bool send( uint8_t sync, uint16_t data );
+
+      uint8_t parity( uint32_t data );
 
       // Controls the pin MUX to enable or disable the 1553 outputs.
       int set_channel( int8_t ch );
@@ -137,7 +145,6 @@ class FlexIO_1553RX: public FlexIO_Base
 
       bool config_flex( void );
       bool config_io_pins( void );
-      uint8_t parity( uint32_t data );
 
       //void isr1553Rx(void);
       //static void isrFlex3_1553Rx(void);
@@ -146,11 +153,10 @@ class FlexIO_1553RX: public FlexIO_Base
    public:
 
       //   Class Constructor
-      // due to the way that FlexIO uses pins in State Machine mode, these are the only
-      // pins that may be used for the data receive line
+      // These are the pins which may be used for the data receive line
       // Teensy 4.1
       //    FlexIO_1          FlexIO_2           FlexIO_3
-      //     2,3               11,13              14,15,40,41
+      //     2,3,4,5,33        6,9,11,13      14,15,16,17,20,21,22,23,40,41
       //
       // @param flex_num       [1 to 3]  specifies which of the on-chip FlexIO modules is to be used.
       // @param rxPin          one of the Teensy pin number from the list above
@@ -174,9 +180,12 @@ class FlexIO_1553RX: public FlexIO_Base
       // Total Number of words which have been received into the buffer
       uint8_t word_count(void);
 
+      uint8_t getSyncType(void);
+
       // Read one word from RX buffer
       int32_t read(void);
 
+      uint8_t parity( uint32_t data );
 
       // Write the sync pattern to the FlexIO hardware
       void set_sync( uint8_t sync_type );

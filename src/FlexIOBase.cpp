@@ -1,6 +1,76 @@
+// This is a simple base class to use with a single FlexIO module
+
 #include <Arduino.h>
 #include <FlexIOBase.h>
 
+
+////////////////////////////////////////////////////////////////
+/////////////// Start of Interrupt Routines ////////////////////
+////////////////////////////////////////////////////////////////
+
+// It turns out that an interrupt rountine can not be imbedded inside a C++ class.
+// An ISR must have a static address which is determined at compile time, and thus,
+// it cannot reside in an instantiated class. However you can setup an ISR to call
+// a callback function, which CAN reside inside a class.
+//
+// In this application, there are only 3 possible interrupts (one for each FlexIO module)
+// and only one of those can be used by one instance of the class. All variables required
+// by the ISR are also defined outside the class, and there are three copies of each variable.
+// This allows for up to three instances of the class (one for each FlexIO module), each
+// using its own ISR and own set of static variables.
+//
+// The ISR simply calls another function (a callback), which is defined at runtime.
+
+//static volatile bool  g_flexIsrEnable[4] = {0,0,0,0};  // blocks an interrupt callback, without actually disabling the interrupt
+static  void (* g_flexIsrCallback[4])(void) = {NULL, NULL, NULL, NULL};
+
+static void isrFlex1_default(void)
+{
+   #ifdef FLEXIO1_DEBUG_INT_PIN
+      digitalWrite(FLEXIO1_DEBUG_INT_PIN, true);
+   #endif
+
+   if(g_flexIsrCallback[1] != NULL)
+      g_flexIsrCallback[1]();
+
+   #ifdef FLEXIO1_DEBUG_INT_PIN
+      digitalWrite(FLEXIO1_DEBUG_INT_PIN, false);
+   #endif
+}
+
+static void isrFlex2_default(void)
+{
+   #ifdef FLEXIO2_DEBUG_INT_PIN
+      digitalWrite(FLEXIO2_DEBUG_INT_PIN, true);
+   #endif
+
+   if(g_flexIsrCallback[2] != NULL)
+      g_flexIsrCallback[2]();
+
+   #ifdef FLEXIO2_DEBUG_INT_PIN
+      digitalWrite(FLEXIO2_DEBUG_INT_PIN, false);
+   #endif
+}
+
+static void isrFlex3_default(void)
+{
+   #ifdef FLEXIO3_DEBUG_INT_PIN
+      digitalWrite(FLEXIO3_DEBUG_INT_PIN, true);
+   #endif
+
+   if(g_flexIsrCallback[3] != NULL)
+      g_flexIsrCallback[3]();
+
+   #ifdef FLEXIO3_DEBUG_INT_PIN
+      digitalWrite(FLEXIO3_DEBUG_INT_PIN, false);
+   #endif
+}
+
+
+
+////////////////////////////////////////////////////////////////
+///////////////       Start of Class        ////////////////////
+////////////////////////////////////////////////////////////////
 
 // Constructor
 //FlexIO_Base::FlexIO_Base(uint8_t flex_num, uint8_t pll_divider)
@@ -39,12 +109,37 @@ bool FlexIO_Base::begin( void )
    if( !config_clock_div(prediv, postdiv) )
       return false;  // abort on error
 
+   // attach the appropriate ISR to FlexIO interrupt
+   switch(m_flex_num) {
+      case FLEXIO1:
+         FlexIO_Base::attachInterrupt(isrFlex1_default);
+         break;
+      case FLEXIO2:
+         FlexIO_Base::attachInterrupt(isrFlex2_default);
+         break;
+      case FLEXIO3:
+         FlexIO_Base::attachInterrupt(isrFlex3_default);
+         break;
+   }
+
+   // setup interrupt debug pins
+   #ifdef FLEXIO1_DEBUG_INT_PIN
+      pinMode(FLEXIO1_DEBUG_INT_PIN, OUTPUT);
+   #endif
+   #ifdef FLEXIO2_DEBUG_INT_PIN
+      pinMode(FLEXIO2_DEBUG_INT_PIN, OUTPUT);
+   #endif
+   #ifdef FLEXIO3_DEBUG_INT_PIN
+      pinMode(FLEXIO3_DEBUG_INT_PIN, OUTPUT);
+   #endif
+
    return true;
 }
 
 // clear the FlexIO configuration
 void FlexIO_Base::end( void )
 {
+   FlexIO_Base::detachInterrupt();
    m_flex->CTRL |= 2;    // reset Flex module
    m_flex->CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
 }
@@ -429,12 +524,17 @@ void FlexIO_Base::get_clock_divider( uint8_t *target_div, uint8_t *pre_div, uint
 
 
 
+// This attaches a function to a hardware interrupt
 // An interrupt routine can be triggered from a timer output or
 // a shifter status flag output. There is only one interrupt vector
 // for each flex module, so it is up to you to verify who tripped
 // the interrupt (if more than on source is enabled)
+// Be aware that attached isr must be declared as static, that is,
+// the memory address is defined at compile time.
 void FlexIO_Base::attachInterrupt(void (*isr)(void))
 {
+   m_flex->SHIFTSIEN = 0;   // disable all FlexIO interrupt sources
+   m_flex->TIMIEN = 0;
    int irq = FlexIO_Base::get_irq_num();
 	_VectorsRam[irq + 16] = isr;
 	NVIC_ENABLE_IRQ(irq);
@@ -443,6 +543,8 @@ void FlexIO_Base::attachInterrupt(void (*isr)(void))
 
 void FlexIO_Base::attachInterrupt(void (*isr)(void), uint8_t prio)
 {
+   m_flex->SHIFTSIEN = 0;   // disable all FlexIO interrupt sources
+   m_flex->TIMIEN = 0;
    int irq = FlexIO_Base::get_irq_num();
 	_VectorsRam[irq + 16] = isr;
 	NVIC_ENABLE_IRQ(irq);
@@ -452,13 +554,35 @@ void FlexIO_Base::attachInterrupt(void (*isr)(void), uint8_t prio)
 
 void FlexIO_Base::detachInterrupt(void)
 {
+   m_flex->SHIFTSIEN = 0;   // disable all FlexIO interrupt sources
+   m_flex->TIMIEN = 0;
 	NVIC_DISABLE_IRQ(FlexIO_Base::get_irq_num());
 }
 
 
-void FlexIO_Base::clearInterrupt(uint8_t source, uint8_t flag_num)
+// This sets a function to call back when a FlexIO interrupt occurs.
+// This callback mechanism uses the isrFlexX_default() functions defined
+// at the top of this file. These are ISRs which are attached by default
+// but they can be overridden with attachInterrupt() above, in which
+// case this callback mechanism would no longer work.
+// Attaching a callback will overwrite any previously assigned callback.
+// Note that the attached callback function must be a static function.
+// You can not attach a normal class member (I know that sucks, but
+// I cant find any way around it)
+bool FlexIO_Base::attachInterruptCallback(void (*callback)(void))
 {
-	//DMA_CINT = channel;
+   disableInterruptSource(FLEXIO_SHIFTERS);
+   disableInterruptSource(FLEXIO_TIMERS);
+   //g_flexIsrEnable[m_flex_num] = false;
+   g_flexIsrCallback[m_flex_num] = callback;
+   return true;
+}
+
+
+void FlexIO_Base::detachInterruptCallback(void)
+{
+   //g_flexIsrEnable[m_flex_num] = false;
+   g_flexIsrCallback[m_flex_num] = NULL;
 }
 
 
@@ -483,8 +607,8 @@ void FlexIO_Base::enableInterruptSource(uint8_t source, uint8_t flag_num)
 
 
 // This function clears one FlexIO interrupt flag
-// @param flag   timer or shifter number [0 to 7]
 // @param source FLEXIO_SHIFTERS or FLEXIO_TIMERS
+// @param flag   timer or shifter number [0 to 7]
 void FlexIO_Base::disableInterruptSource(uint8_t source, uint8_t flag_num)
 {
    noInterrupts();
@@ -497,6 +621,21 @@ void FlexIO_Base::disableInterruptSource(uint8_t source, uint8_t flag_num)
          break;
    }
    interrupts();
+}
+
+
+// This function clears all FlexIO interrupt flags for this source
+// @param source FLEXIO_SHIFTERS or FLEXIO_TIMERS
+void FlexIO_Base::disableInterruptSource(uint8_t source)
+{
+   switch(source) {
+      case FLEXIO_SHIFTERS:
+         m_flex->SHIFTSIEN = 0;
+         break;
+      case FLEXIO_TIMERS:
+         m_flex->TIMIEN = 0;
+         break;
+   }
 }
 
 
@@ -517,7 +656,7 @@ uint32_t FlexIO_Base::readInterruptFlags(uint8_t source)
 
 
 // Same as above, but returns only a single flag
-bool FlexIO_Base::readInterruptFlags(uint8_t source, uint8_t flag_num)
+bool FlexIO_Base::readInterruptFlag(uint8_t source, uint8_t flag_num)
 {
    uint32_t flags = FlexIO_Base::readInterruptFlags(source);
    if( flags & (1 << flag_num))
@@ -526,6 +665,18 @@ bool FlexIO_Base::readInterruptFlags(uint8_t source, uint8_t flag_num)
       return(false);
 }
 
+
+void FlexIO_Base::clearInterrupt(uint8_t source, uint8_t flag_num)
+{
+   switch(source) {
+      case FLEXIO_SHIFTERS:
+         m_flex->SHIFTSTAT = 1 << flag_num;
+         break;
+      case FLEXIO_TIMERS:
+         m_flex->TIMSTAT = 1 << flag_num;
+         break;
+   }
+}
 
 
 inline int FlexIO_Base::get_irq_num(void)

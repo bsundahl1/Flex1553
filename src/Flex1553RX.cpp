@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include <Flex1553.h>
 
+// This class implements a 1553 receiver in one FlexIO module of the
+// NXP i.MXRT1062 processor
+
+
 // 7/12/21  change to a 48MHz clock so we can derive 6MHz from timers
 // 9/10/21  reconfigured code to use C++ class instead of standard C
 // 9/20/21  created base class for reusable FlexIO functions
@@ -14,7 +18,6 @@
 // Bug list
 // finish enable() and disable()
 // add one more timer to trigger interrupt at end of transmission
-// finish other two isr's
 
 
 #define REVERSE_LOOKUP   true
@@ -42,26 +45,40 @@
 #define FLEX_1553RX_PIN_SHFT2_IN   1    // fault bits from state machine  (not accessable on teensy pin)
 
 // The following FXIO signals may be changed as needed
-// Note that FXIO_D[7:0] are reserved for use with the state machine
-//#define FLEX1_1553RX_PIN_DATA_IN    4    // data input pin
-#define FLEX1_1553RX_PIN_TIM0_OUT  13    // 2 MHz state machine clock - for debug only
-#define FLEX1_1553RX_PIN_TIM2_OUT  14    // End of Transmission  - for debug only
-#define FLEX1_1553RX_PIN_TIM4_OUT  12    // Reset pulse to Timer3
-#define FLEX1_1553RX_PIN_TIM5_OUT   8    // 5 MHz clock
-#define FLEX1_1553RX_PIN_TIM7_OUT  15    // SYNC pulse - for debug only
+// For debug, the recomended input pin is in the range of FXIO_[2:5] to avoid conflicts
+// Notes: FXIO_D[1:0] are reserved for state machine outputs
+//        State Machine (SM) inputs include 3 signals:
+//          the specified input FXIO_Dx (which maps to rxPin)
+//          the 1MHz clock FXIO_Dx + 1
+//          unused but required input FXIO_Dx + 2
+//        These three SM inputs move with rxPin, as a set, in order by FXIO_D number.
+//        1553RX_PIN_TIM4_OUT & 1553RX_PIN_TIM5_OUT are always enabled and must
+//          not conflict with SM input or output signals.
+//        The other three signals listed here must not conflict IF FLEX_DEBUG is defined
+//          otherwise, these signals are disabled.
+#define FLEX1_1553RX_PIN_TIM0_OUT  12    // 2 MHz state machine clock - for debug only
+#define FLEX1_1553RX_PIN_TIM2_OUT  13    // End of Transmission  - for debug only
+#define FLEX1_1553RX_PIN_TIM4_OUT  14    // Reset pulse to Timer3
+#define FLEX1_1553RX_PIN_TIM5_OUT  15    // 5 MHz clock
+#define FLEX1_1553RX_PIN_TIM7_OUT   8    // SYNC pulse - for debug only
 
-#define FLEX2_1553RX_PIN_TIM0_OUT  11    // 2 MHz state machine clock
-#define FLEX2_1553RX_PIN_TIM2_OUT  10    // End of Transmission
-#define FLEX2_1553RX_PIN_TIM4_OUT  12    // Reset pulse to Timer3
-#define FLEX2_1553RX_PIN_TIM5_OUT  16    // 5 MHz clock
+#define FLEX2_1553RX_PIN_TIM0_OUT  10    // 2 MHz state machine clock
+#define FLEX2_1553RX_PIN_TIM2_OUT  11    // End of Transmission
+#define FLEX2_1553RX_PIN_TIM4_OUT  14    // Reset pulse to Timer3
+#define FLEX2_1553RX_PIN_TIM5_OUT  15    // 5 MHz clock
 #define FLEX2_1553RX_PIN_TIM7_OUT  17    // SYNC pulse - for debug only
 
-#define FLEX3_1553RX_PIN_TIM0_OUT  11    // 2 MHz state machine clock
-#define FLEX3_1553RX_PIN_TIM2_OUT  10    // End of Transmission
-#define FLEX3_1553RX_PIN_TIM4_OUT  12    // Reset pulse to Timer3
-#define FLEX3_1553RX_PIN_TIM5_OUT   8    // 5 MHz clock
+#define FLEX3_1553RX_PIN_TIM0_OUT  10    // 2 MHz state machine clock
+#define FLEX3_1553RX_PIN_TIM2_OUT  11    // End of Transmission
+#define FLEX3_1553RX_PIN_TIM4_OUT  14    // Reset pulse to Timer3
+#define FLEX3_1553RX_PIN_TIM5_OUT  15    // 5 MHz clock
 #define FLEX3_1553RX_PIN_TIM7_OUT   9    // SYNC pulse - for debug only
 
+#ifdef DEBUG
+   #define PIN_ENA  3   // enable timer output enable only if DEBUG flag is set
+#else
+   #define PIN_ENA  0
+#endif
 
 
 ////////////////////////////////////////////////////////////////
@@ -80,17 +97,84 @@
 // three instances of the class (one for each FlexIO module), each using its own ISR and
 // own set of static variables.
 
-static volatile uint32_t g_syncType[4] = {FLEX1553_COMMAND_WORD, FLEX1553_COMMAND_WORD, FLEX1553_COMMAND_WORD, FLEX1553_COMMAND_WORD};
+static volatile uint8_t  g_syncType[4] = {FLEX1553_COMMAND_WORD, FLEX1553_COMMAND_WORD, FLEX1553_COMMAND_WORD, FLEX1553_COMMAND_WORD};
 static volatile uint8_t  g_rxDataCount[4] = {0};  // keep track of how many words are in the buffer
 static volatile uint32_t g_rxData[4][33];  // RX data buffer, 33 words (including command) is the longest valid packet
 static volatile uint32_t g_rxFault[4][33];
 
+
 static void isrFlex1_1553Rx(void)
 {
+   int flags =  FLEXIO1_SHIFTSTAT; // read FlexIO shifter flags
+
+   // found Sync pattern
+   if(flags & 0x08) { // bit 3 is from the Shifter3 status flag
+      // This indicates a match in the sync trigger pattern
+
+      //flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 1);  // not needed in Match Continuous mode?
+      if(g_syncType[1] == FLEX1553_COMMAND_WORD) { // change to data sync
+         // A valid packet will always start with a COMMAND word, and be followed by
+         // one or more DATA words. We only have the ability to watch for a single
+         // sync pattern, so the pattern must initially be set to COMMAND, and here we
+         // change it to DATA.
+         FLEXIO1_SHIFTBUFBIS3 = FLEX1553_DATA_SYNC_PATTERN;
+         g_syncType[1] = FLEX1553_DATA_WORD;
+      }
+      //Serial.println("found sync");
+   }
+
+   // received one word
+   if(flags & 0x02) { // bit 1 is from the Shifter1 status flag
+      // This indicates that a new word has been captured by the receiver
+
+      // save the data and fault shifters into a buffer
+      uint8_t offset = g_rxDataCount[1];
+      if(offset < 32) {
+         g_rxFault[1][offset] = FLEXIO1_SHIFTBUFBIS2;
+         g_rxData[1][offset]  = FLEXIO1_SHIFTBUFBIS1; // reading the shifter also clears the interrupt flag
+      }
+      g_rxDataCount[1]++;
+
+      //Serial.print("received word: ");
+      //Serial.println(rx_data >> 1, HEX);
+   }
 }
 
 static void isrFlex2_1553Rx(void)
 {
+   int flags =  FLEXIO2_SHIFTSTAT; // read FlexIO shifter flags
+
+   // found Sync pattern
+   if(flags & 0x08) { // bit 3 is from the Shifter3 status flag
+      // This indicates a match in the sync trigger pattern
+
+      //flex1553RX.clearInterrupt(FLEXIO_SHIFTERS, 2);  // not needed in Match Continuous mode?
+      if(g_syncType[2] == FLEX1553_COMMAND_WORD) { // change to data sync
+         // A valid packet will always start with a COMMAND word, and be followed by
+         // one or more DATA words. We only have the ability to watch for a single
+         // sync pattern, so the pattern must initially be set to COMMAND, and here we
+         // change it to DATA.
+         FLEXIO2_SHIFTBUFBIS3 = FLEX1553_DATA_SYNC_PATTERN;
+         g_syncType[2] = FLEX1553_DATA_WORD;
+      }
+      //Serial.println("found sync");
+   }
+
+   // received one word
+   if(flags & 0x02) { // bit 1 is from the Shifter1 status flag
+      // This indicates that a new word has been captured by the receiver
+
+      // save the data and fault shifters into a buffer
+      uint8_t offset = g_rxDataCount[2];
+      if(offset < 32) {
+         g_rxFault[2][offset] = FLEXIO2_SHIFTBUFBIS2;
+         g_rxData[2][offset]  = FLEXIO2_SHIFTBUFBIS1; // reading the shifter also clears the interrupt flag
+      }
+      g_rxDataCount[2]++;
+
+      //Serial.print("received word: ");
+      //Serial.println(rx_data >> 1, HEX);
+   }
 }
 
 static void isrFlex3_1553Rx(void)
@@ -120,8 +204,8 @@ static void isrFlex3_1553Rx(void)
       // save the data and fault shifters into a buffer
       uint8_t offset = g_rxDataCount[3];
       if(offset < 32) {
-         g_rxData[3][offset]  = FLEXIO3_SHIFTBUFBIS1; // reading the shifter also clears the interrupt flag
          g_rxFault[3][offset] = FLEXIO3_SHIFTBUFBIS2;
+         g_rxData[3][offset]  = FLEXIO3_SHIFTBUFBIS1; // reading the shifter also clears the interrupt flag
       }
       g_rxDataCount[3]++;
 
@@ -193,10 +277,9 @@ bool FlexIO_1553RX::begin( void )
       Serial.println();
    #endif
 
-   if(flexio_d_data_in < 2 || flexio_d_data_in > 5) {
+   if(flexio_d_data_in < 2 || flexio_d_data_in > 11) {
       // The Teensy pin number passed to the constructor (rxPin) is expected to
-      // translate to a FlexIO data line in the range of FXIO[5:2]. This is to
-      // meet the requirements for the state machine inputs.
+      // translate to a FlexIO data line in the range of FXIO[11:2].
       #ifdef FLEX_PRINT_MESSAGES
          Serial.println( "Error: invalid pin number used for rxPin" );
       #endif
@@ -230,17 +313,16 @@ bool FlexIO_1553RX::begin( void )
          FlexIO_Base::attachInterrupt(isrFlex1_1553Rx);
          break;
       case FLEXIO2:
-         FlexIO_Base::attachInterrupt(isrFlex2_1553Rx);
+         //FlexIO_Base::attachInterrupt(isrFlex2_1553Rx);
+         FlexIO_Base::attachInterruptCallback(isrFlex2_1553Rx);
+         //FlexIO_Base::enableCallback();
          break;
       case FLEXIO3:
          FlexIO_Base::attachInterrupt(isrFlex3_1553Rx);
          break;
    }
-   //FlexIO_Base::attachInterrupt(isrFlex3_1553Rx);
    FlexIO_Base::enableInterruptSource(FLEXIO_SHIFTERS, 1);
    FlexIO_Base::enableInterruptSource(FLEXIO_SHIFTERS, 3);
-   //flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 1);
-   //flex1553RX.enableInterruptSource(FLEXIO_SHIFTERS, 3);
 
 
    #ifdef FLEX_PRINT_MESSAGES  // print out pins used
@@ -390,7 +472,7 @@ bool FlexIO_1553RX::config_flex(void)
            //FLEXIO_TIMCTL_TRGSEL( m_f_Pin * 2) |    // Input Pin 4 => (N * 2) = 8
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
-           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINCFG(PIN_ENA)  |        // timer pin output enabled
            FLEXIO_TIMCTL_PINSEL( flexio_d_tim0_out )     |        // timer pin 10 (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
@@ -463,7 +545,7 @@ bool FlexIO_1553RX::config_flex(void)
            FLEXIO_TIMCTL_TRGSEL( 13 )     |        // trigger on Shifter3 status flag (N * 4) + 1
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
-           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin is an output
+           FLEXIO_TIMCTL_PINCFG(PIN_ENA)  |        // timer pin is an output
            FLEXIO_TIMCTL_PINSEL(flexio_d_tim2_out) |      // timer pin (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
@@ -594,8 +676,8 @@ bool FlexIO_1553RX::config_flex(void)
            //FLEXIO_TIMCTL_TRGSEL(m_f_Pin * 2)      |        // Input Pin 4 =(N * 2)
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
-           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
-           FLEXIO_TIMCTL_PINSEL( flexio_d_tim7_out )      |        // timer pin 9 (for debug only)
+           FLEXIO_TIMCTL_PINCFG(PIN_ENA)  |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL(flexio_d_tim7_out)      |        // timer pin 9 (for debug only)
            // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
 
@@ -855,17 +937,18 @@ void FlexIO_1553RX::set_sync( uint8_t sync_type )
 {
    switch(sync_type) {
       case FLEX1553_COMMAND_WORD:
+      case FLEX1553_STATUS_WORD:
          // Shifter3 is in Match Continuous mode, and is constantly serarching for the sync pattern
-         noInterrupts();
+         //noInterrupts();
             m_flex->SHIFTBUFBIS[3] = FLEX1553_COMMAND_SYNC_PATTERN;
-            g_syncType[m_flex_num] = FLEX1553_COMMAND_WORD;
-         interrupts();
+            g_syncType[m_flex_num] = sync_type;
+         //interrupts();
          break;
       case FLEX1553_DATA_WORD:
-         noInterrupts();
+         //noInterrupts();
             m_flex->SHIFTBUFBIS[3] = FLEX1553_DATA_SYNC_PATTERN;
-            g_syncType[m_flex_num] = FLEX1553_DATA_WORD;
-         interrupts();
+            g_syncType[m_flex_num] = sync_type;
+         //interrupts();
          break;
    }
 }
@@ -891,7 +974,7 @@ void FlexIO_1553RX::disable(void)
    m_flex->TIMIEN     = 0;
 }
 
-// enables the FlexIO interrupt and flushes buffer to get ready for new RX data
+// enables the FlexIO RX interrupts
 void FlexIO_1553RX::enable(void)
 {
    FlexIO_Base::enableInterruptSource(FLEXIO_SHIFTERS, 1);   // RX data
@@ -904,10 +987,11 @@ void FlexIO_1553RX::flush(void)
 {
    noInterrupts();
       g_rxDataCount[m_flex_num] = 0;  // clear data buffer write pointer
+      read_data(); // make sure receiver is empty
 
       // set sync for new packet
-      m_flex->SHIFTBUFBIS[3] = FLEX1553_COMMAND_SYNC_PATTERN;
-      g_syncType[m_flex_num] = FLEX1553_COMMAND_WORD;
+      //m_flex->SHIFTBUFBIS[3] = FLEX1553_COMMAND_SYNC_PATTERN;
+      //g_syncType[m_flex_num] = FLEX1553_COMMAND_WORD;
    interrupts();
    m_rxDataRdPtr = 0; // clear data buffer read pointer
 }
@@ -924,6 +1008,12 @@ uint8_t FlexIO_1553RX::available(void)
 uint8_t FlexIO_1553RX::word_count(void)
 {
    return(g_rxDataCount[m_flex_num]);
+}
+
+
+uint8_t FlexIO_1553RX::getSyncType(void)
+{
+   return g_syncType[m_flex_num];
 }
 
 
@@ -944,7 +1034,7 @@ int32_t FlexIO_1553RX::read(void)
    int32_t data  = g_rxData[m_flex_num][m_rxDataRdPtr];
    int32_t fault = g_rxFault[m_flex_num][m_rxDataRdPtr++];
    uint8_t parity_bit = data & 0x01;   // lowest bit is parity bit
-   data = (data >> 1) & 0xffff;     // the next 16-bits it the actual data
+   data = (data >> 1) & 0xffff;     // the next 16-bits is the actual data
 
    // check the parity
    bool parity_err = false;

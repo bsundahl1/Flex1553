@@ -18,6 +18,8 @@
 #define FLEXIO_PINS        2
 #define FLEXIO_TRIGGERS    3
 
+#define ALL_FLEXIO_INTERRUPTS  255
+
 #define FLEXIO_REVERSE_LOOKUP    true
 #define FLEXIO_TEENSY_PIN_TO_FLEXIO_D  true
 #define FLEXIO_FLEXIO_D_TO_TEENSY_PIN  false
@@ -176,11 +178,14 @@ class FlexIO_Base
       void attachInterrupt(void (*isr)(void), uint8_t prio);
       void detachInterrupt(void);
       void clearInterrupt(uint8_t source, uint8_t flag_num);
+      void clearInterrupt(uint8_t key);
       void enableInterruptSource(uint8_t source, uint8_t flag);
+      void enableInterruptSource(uint8_t key);
       void disableInterruptSource(uint8_t source, uint8_t flag_num);
-      void disableInterruptSource(uint8_t source);
+      void disableInterruptSource(uint8_t key);
       uint32_t readInterruptFlags(uint8_t source);
       bool readInterruptFlag(uint8_t source, uint8_t flag_num);
+      bool readInterruptFlag(uint8_t key);
 
 
       bool attachInterruptCallback(void (*callback)(void));

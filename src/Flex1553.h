@@ -14,17 +14,29 @@
 #define FLEX1553_STATUS_WORD    2
 #define FLEX1553_COMMAND_WORD   1
 #define FLEX1553_DATA_WORD      0
+
 #define FLEX1553_COMMAND_SYNC_PATTERN  0x8001ff00U   // upper 16 bits is the mask, lower 16 bits is the trigger pattern
 #define FLEX1553_DATA_SYNC_PATTERN     0x800100ffU
-#define FLEX1553_CH_A      1
-#define FLEX1553_CH_B      2
-#define FLEX1553_CH_ALL    4
+#define FLEX1553_PARITY_ERR_BIT     0x40000000
+#define FLEX1553_FAULT_ERR_BIT      0x20000000
+
+#define FLEX1553_BUS_A      1
+#define FLEX1553_BUS_B      2
+#define FLEX1553_BUS_ALL    4
+
 #define FLEX1553_PINPAIR_1 0
 #define FLEX1553_PINPAIR_2 1
 #define FLEX1553_PINPAIR_3 2
 #define FLEX1553_PINPAIR_4 3
-#define FLEX1553_PARITY_ERR_BIT     0x40000000
-#define FLEX1553_FAULT_ERR_BIT      0x20000000
+
+#define FLEX1553TX_TRANSMITTER_EMPTY_INTERRUPT          1      // FLEXIO_SHIFTERS, 1
+#define FLEX1553TX_END_OF_TRANSMIT_INTERRUPT            66     // FLEXIO_TIMERS, 2
+#define FLEX1553TX_END_OF_TRANSMIT_DELAYED_INTERRUPT    70     // FLEXIO_TIMERS, 6
+#define FLEX1553RX_RECEIVER_FULL_INTERRUPT              1      // FLEXIO_SHIFTERS, 1
+//#define FLEX1553RX_SYNC_FOUND_INTERRUPT                 3      // FLEXIO_SHIFTERS, 3
+#define FLEX1553RX_SYNC_FOUND_INTERRUPT                 71     // FLEXIO_TIMERS, 7
+#define FLEX1553RX_END_OF_RECEIVE_INTERRUPT             66     // FLEXIO_TIMERS, 2
+#define FLEX1553_ALL_INTERRUPTS                         255
 
 
 typedef struct {
@@ -101,17 +113,18 @@ class FlexIO_1553TX: public FlexIO_Base
 
       // Use the blocking functions if TX interrupts are NOT being used
       // The function will not return until the word has been sent, or a timeout occurs
-      int send_blocking( uint8_t sync, uint16_t data );
-      int send_command_blocking( byte rtaddress, byte subaddress, byte wordcount, byte trDir );
-      int send_status_blocking( uint8_t sync, uint16_t data );
-      int send_data_blocking( uint16_t data );
+      int write_blocking( uint8_t sync, uint16_t data );
+      int write_command_blocking( byte rtaddress, byte subaddress, byte wordcount, byte trDir );
+      int write_status_blocking( uint8_t sync, uint16_t data );
+      int write_data_blocking( uint16_t data );
 
-      bool send( uint8_t sync, uint16_t data );
+      bool write( uint8_t sync, uint16_t data );
 
       uint8_t parity( uint32_t data );
 
       // Controls the pin MUX to enable or disable the 1553 outputs.
       int set_channel( int8_t ch );
+      int8_t get_channel(void);
 
       int transmitter_busy( void );
 

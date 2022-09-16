@@ -53,6 +53,8 @@ will control the FET drivers and isolation transformer needed for standard
 Configure FlexIO module and the pins pair(s) that you would like to use when
 instantiating FlexIO_1553TX().
 
+### Debug pins
+
 ### Configuration
 
 ### Hardware
@@ -96,10 +98,14 @@ transmitter. This occurs at the same time that the transmitter goes into
 tri-state. This can be used to signal the end of a packet, or a bus turnaround
 from TX to RX.
 
-#### Timer6: End of Transmit + 2us
+#### Timer6: End of Transmit Delayed
 
-This is the same as Timer2 above, but is delayed by another 2 microseconds.
-This timer has purpose no other than to generate an interrupt.
-It takes an extra half clock (1/2 us) to latch the receive data into the
-receive shifter, so if you need this interrupt to happen **after** the receiver
-has capture the outgoing (loop back) data, use this interrupt instead.
+One advantage of a FlexIO peripheral: if you dont like the behavior of an
+interrupt, you can make your own. This is basically the same as the "End of
+Transmit" interrupt above, but is delayed by another 2 microseconds. This
+timer has no purpose other than to generate an interrupt.
+
+The receiver takes an extra half clock (1/2 us) after receiving the last
+data bit to latch the data into the receive data register, so if you need
+the EOT interrupt to happen **after** the "Receiver Full" interrupt, use
+this interrupt instead.

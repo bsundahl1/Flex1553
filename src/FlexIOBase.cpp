@@ -571,8 +571,7 @@ void FlexIO_Base::detachInterrupt(void)
 // I cant find any way around it)
 bool FlexIO_Base::attachInterruptCallback(void (*callback)(void))
 {
-   disableInterruptSource(FLEXIO_SHIFTERS);
-   disableInterruptSource(FLEXIO_TIMERS);
+   disableInterruptSource(ALL_FLEXIO_INTERRUPTS);
    //g_flexIsrEnable[m_flex_num] = false;
    g_flexIsrCallback[m_flex_num] = callback;
    return true;
@@ -589,8 +588,8 @@ void FlexIO_Base::detachInterruptCallback(void)
 // Each FlexIO module has one interrupt flag for each timer and one
 // for each shifter. For the RT1062, there are 8 of each.
 // This function sets one FlexIO interrupt flag.
-// @param source    FLEXIO_SHIFTERS or FLEXIO_TIMERS
-// @param flag_num  timer or shifter number [0 to 7]
+// @param source   : FLEXIO_SHIFTERS or FLEXIO_TIMERS
+// @param flag_num : timer or shifter number [0 to 7]
 void FlexIO_Base::enableInterruptSource(uint8_t source, uint8_t flag_num)
 {
    noInterrupts();
@@ -603,6 +602,25 @@ void FlexIO_Base::enableInterruptSource(uint8_t source, uint8_t flag_num)
          break;
    }
    interrupts();
+}
+
+
+// This is a version intended to be used with defines
+// @param key :  values from 0 to 7 are FLEXIO_SHIFTERS
+//               values from 64 to 71 are FLEXIO_TIMERS
+void FlexIO_Base::enableInterruptSource(uint8_t key)
+{
+   if(key < 8) {
+      noInterrupts();
+      m_flex->SHIFTSIEN |= 1 << key;
+      interrupts();
+   }
+   else if(key < 72) {
+      // the only valid values are 0x40 to 0x47
+      noInterrupts();
+      m_flex->TIMIEN |= 1 << (key & 0x07);
+      interrupts();
+   }
 }
 
 
@@ -624,17 +642,28 @@ void FlexIO_Base::disableInterruptSource(uint8_t source, uint8_t flag_num)
 }
 
 
-// This function clears all FlexIO interrupt flags for this source
-// @param source FLEXIO_SHIFTERS or FLEXIO_TIMERS
-void FlexIO_Base::disableInterruptSource(uint8_t source)
+// This is a version intended to be used with defines
+// @param key :  values from 0 to 7 are FLEXIO_SHIFTERS
+//               values from 64 to 71 are FLEXIO_TIMERS
+//               255 clears all
+void FlexIO_Base::disableInterruptSource(uint8_t key)
 {
-   switch(source) {
-      case FLEXIO_SHIFTERS:
-         m_flex->SHIFTSIEN = 0;
-         break;
-      case FLEXIO_TIMERS:
-         m_flex->TIMIEN = 0;
-         break;
+   if(key == 255) {
+      noInterrupts();
+      m_flex->SHIFTSIEN = 0;
+      m_flex->TIMIEN = 0;
+      interrupts();
+   }
+   else if(key < 8) {
+      noInterrupts();
+      m_flex->SHIFTSIEN &= ~(1 << key);
+      interrupts();
+   }
+   else if(key < 72) {
+      // the only valid values are 0x40 to 0x47
+      noInterrupts();
+      m_flex->TIMIEN &= ~(1 << (key & 0x07));
+      interrupts();
    }
 }
 
@@ -665,6 +694,30 @@ bool FlexIO_Base::readInterruptFlag(uint8_t source, uint8_t flag_num)
       return(false);
 }
 
+// This is a version intended to be used with defines
+// @param key :  values from 0 to 7 are FLEXIO_SHIFTERS
+//               values from 64 to 71 are FLEXIO_TIMERS
+bool FlexIO_Base::readInterruptFlag(uint8_t key)
+{
+   uint32_t flags = 0;
+   uint8_t  flag_num = 0;;
+
+   if(key < 8) {
+      flags = FlexIO_Base::readInterruptFlags(FLEXIO_SHIFTERS);
+      flag_num = key;
+   }
+   else if(key < 72) {
+      // the only valid values are 0x40 to 0x47
+      flags = FlexIO_Base::readInterruptFlags(FLEXIO_TIMERS);
+      flag_num = key - 64;
+   }
+
+   if( flags & (1 << flag_num))
+      return(true);
+   else
+      return(false);
+}
+
 
 void FlexIO_Base::clearInterrupt(uint8_t source, uint8_t flag_num)
 {
@@ -675,6 +728,21 @@ void FlexIO_Base::clearInterrupt(uint8_t source, uint8_t flag_num)
       case FLEXIO_TIMERS:
          m_flex->TIMSTAT = 1 << flag_num;
          break;
+   }
+}
+
+void FlexIO_Base::clearInterrupt(uint8_t key)
+{
+   if(key == 255) {
+      m_flex->SHIFTSTAT = 0xffff;
+      m_flex->TIMSTAT   = 0xffff;
+   }
+   else if(key < 8) {
+      m_flex->SHIFTSTAT = 1 << key;
+   }
+   else if(key < 72) {
+      // the only valid values are 0x40 to 0x47
+      m_flex->TIMSTAT = 1 << (key & 0x07);
    }
 }
 

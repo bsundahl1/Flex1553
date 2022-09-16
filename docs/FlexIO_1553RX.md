@@ -137,15 +137,17 @@ can make this look more like a normal peripheral, writing the data we want
 to send, and let FlexIO produce the actual output levels.
 
 You might think of a state machine as a very very simple version of a
-microprocessor, only simpler. It has a fixed number of states that that it
-can be in (FlexIO is limited to 8 states), and it can change from one state
-to another based on its inputs, its current state, and a lookup table.
-FlexIO implements a Moore state machine, which means that its outputs
-depend only on the current state. That is really all there is to it.
-
+microprocessor, only simpler. It has a fixed number of states that it can
+be in (FlexIO is limited to 8 states), and it can change from one state to
+another based on its inputs, its current state, and a lookup table. FlexIO
+implements a Moore state machine, which means that its outputs depend only
+on the current state. That is really all there is to it.
 
 ### Data capture
 
+The data capture works very similar to any other FlexIO data capture, the
+biggest difference being that it is fed by the output of the state machine
+demodulator instead of directly from an input pin.
 
 ### End of Transmission (EOT)
 
@@ -170,12 +172,25 @@ FlexIO receiver event.
 This interrupt will occur after a full word is received, when FlexIO loads
 the word from Shifter1 into the shifter holding register. Software must
 retrieve this word from the holding register before the next word is
-received, to avoid an overrun.
+received, to avoid an overrun. This interrupt is cleared by reading
+Shifter1
 
-#### Shifter3 Interrupt: Sync Pattern Found
+//#### Shifter3 Interrupt: Sync Pattern Found (non-latching)
+#### Timer7 Interrupt: Sync Pattern Found
 
 This interrupt will occur when the currently selected sync pattern is
 detected. This may be used to change the sync pattern between received
-words.
+words. This is a latched version of the Shifter3 status flag.
+This interrupt must be cleared by writing a 1 to bit 7 of the FlexIO
+TIMSTAT register. Or call clearInterrupt(FLEX1553RX_SYNC_FOUND_INTERRUPT).
 
+#### Timer2 Interrupt: End of Receive
+
+Once we start receiving data, a new SYNC pattern should be seen every 20
+microseconds, until the end of the data. This interrupt will occur 21
+microseconds after the last SYNC, if no new SYNC is detected. This could be
+used to turn off the receiver at the end of data, even if the data ends
+sooner than expected.
+This interrupt must be cleared by writing a 1 to bit 2 of the FlexIO
+TIMSTAT register. Or call clearInterrupt(FLEX1553RX_END_OF_RECEIVE_INTERRUPT).
 

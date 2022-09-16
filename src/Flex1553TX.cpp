@@ -3,8 +3,8 @@
 
 // This class implements a 1553 transmitter in one FlexIO module of the
 // NXP i.MXRT1062 processor. This is a physical layer only, it does not
-// know the meaning of any of the control bits other than parity.
-// There is no synchronization with the receive module.
+// know the meaning of a packet, or any of the control bits other than
+// parity. There is no synchronization with the receive module.
 
 
 // 7/12/21  change to a 48MHz clock so we can derive 6MHz from timers
@@ -71,8 +71,8 @@
 FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, int8_t pinPairA, int8_t pinPairB)
    :FlexIO_Base(flex_num, 40.0)
 {
-   m_chanToPinPair[FLEX1553_CH_A] = -1;
-   m_chanToPinPair[FLEX1553_CH_B] = -1;
+   m_chanToPinPair[FLEX1553_BUS_A] = -1;
+   m_chanToPinPair[FLEX1553_BUS_B] = -1;
 
    // initialize pin pair structures
    for( int i=0; i<4; i++ ) {
@@ -87,11 +87,11 @@ FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, int8_t pinPairA, int8_t pinPairB)
    // if a valid pin pair was specified, assign
    if(pinPairA >= FLEX1553_PINPAIR_1 && pinPairA <= FLEX1553_PINPAIR_4) {
       m_pair[pinPairA].allowed = true;
-      m_chanToPinPair[FLEX1553_CH_A] = pinPairA;
+      m_chanToPinPair[FLEX1553_BUS_A] = pinPairA;
    }
    if(pinPairB >= FLEX1553_PINPAIR_1 && pinPairB <= FLEX1553_PINPAIR_4) {
       m_pair[pinPairB].allowed = true;
-      m_chanToPinPair[FLEX1553_CH_B] = pinPairB;
+      m_chanToPinPair[FLEX1553_BUS_B] = pinPairB;
    }
 
    // assign FlexIO_Dxx lines based on which FlexIO is used
@@ -136,7 +136,7 @@ FlexIO_1553TX::FlexIO_1553TX(uint8_t flex_num, int8_t pinPairA, int8_t pinPairB)
    m_altFlex  = (m_flex_num == 3)? 9 : 4; // FlexIO3 uses ALT9, FLEXIO1 & 2 use ALT4
    m_altGpio  = 5;  // gpio always uses Alt5
    //m_baud_div = 30; // divide from 30MHz to 1MHz
-   m_chan = FLEX1553_CH_A;
+   m_chan = FLEX1553_BUS_A;
    m_just_configured = false;
 }
 
@@ -253,12 +253,12 @@ bool FlexIO_1553TX::config_io_pins(void)
          digitalWrite(m_pair[i].t_negPin, false);
          pinMode(m_pair[i].t_posPin, OUTPUT);      // and configure as outputs
          pinMode(m_pair[i].t_negPin, OUTPUT);
-         //if(i == m_chanToPinPair[FLEX1553_CH_A]) { // if this is channel A
+         //if(i == m_chanToPinPair[FLEX1553_BUS_A]) { // if this is channel A
          //   setPinMux(m_pair[i].t_posPin);         // set the PinMux to FlexIO
          //   setPinMux(m_pair[i].t_negPin);
          //}
       }
-      set_channel( FLEX1553_CH_A );  // enable channel A as output
+      set_channel( FLEX1553_BUS_A );  // enable channel A as output
    }
 
    // The rest of this code routs optional outputs to IO pins, primarily for debug.
@@ -705,7 +705,7 @@ bool FlexIO_1553TX::config_flex( void )
 // @param  subaddress:  register number to send data to
 // @param  wordcount:   number of data bytes to follow (1 to 32)
 // @return error code:  0=success, -1=Flex clock disabled, -2=timeout
-int FlexIO_1553TX::send_command_blocking( byte rtaddress, byte subaddress, byte wordcount, byte trDir )
+int FlexIO_1553TX::write_command_blocking( byte rtaddress, byte subaddress, byte wordcount, byte trDir )
 {
    uint16_t data;
    int t_r = 0;
@@ -714,7 +714,7 @@ int FlexIO_1553TX::send_command_blocking( byte rtaddress, byte subaddress, byte 
       t_r = 1;
 
    data = (rtaddress & 0x1f) << 11 | (t_r & 1) << 10 | (subaddress & 0x1f) << 5 | (wordcount & 0x1f);
-   return( send_blocking( FLEX1553_COMMAND_WORD, data) );
+   return( write_blocking( FLEX1553_COMMAND_WORD, data) );
 }
 
 
@@ -723,21 +723,21 @@ int FlexIO_1553TX::send_command_blocking( byte rtaddress, byte subaddress, byte 
 // If transmitter is busy, this will wait for it to become avilable.
 // @param  data:   16-bit data
 // @return error code: 0=success, -1=Flex clock disabled, -2=timeout
-int FlexIO_1553TX::send_data_blocking( uint16_t data )
+int FlexIO_1553TX::write_data_blocking( uint16_t data )
 {
-   return( send_blocking( FLEX1553_DATA_WORD, data) );
+   return( write_blocking( FLEX1553_DATA_WORD, data) );
 }
 
 
 
 // Generic send command
-// Sends one word on bus, using FlexIO1
+// Sends one word on bus, using FlexIO
 // If transmitter is busy, this will wait for it to become avilable.
 // Times out after 100 microseconds
 // @param  sync:   0=data sync, 1=command or status sync
 // @param  data:   16-bit data
 // @return error code: 0=success, -1=Flex clock disabled, -2=timeout
-int FlexIO_1553TX::send_blocking( uint8_t sync, uint16_t data )
+int FlexIO_1553TX::write_blocking( uint8_t sync, uint16_t data )
 {
    uint32_t shiftData;
    uint32_t time;
@@ -751,10 +751,10 @@ int FlexIO_1553TX::send_blocking( uint8_t sync, uint16_t data )
    // The first three bits form a SYNC pulse, which behave differently than the
    // data bits. The FlexIO state machine will treat these bit positions special
    // due to the control bits loaded into SHIFTBUF2, do not use any other codes here.
-   if( sync == FLEX1553_COMMAND_WORD )
-      shiftData =  0xC0000000U; // 110b
-   else
+   if( sync == FLEX1553_DATA_WORD )
       shiftData =  0x20000000U; // 001b
+   else
+      shiftData =  0xC0000000U; // 110b
 
    shiftData = shiftData | ((uint32_t)data << 13) | ((uint32_t)parity(data) << 12);
 
@@ -785,7 +785,8 @@ int FlexIO_1553TX::send_blocking( uint8_t sync, uint16_t data )
 }
 
 
-bool FlexIO_1553TX::send( uint8_t sync, uint16_t data )
+// this writes one word to the transmitter hardware
+bool FlexIO_1553TX::write( uint8_t sync, uint16_t data )
 {
    uint32_t shiftData;
 
@@ -793,10 +794,10 @@ bool FlexIO_1553TX::send( uint8_t sync, uint16_t data )
    // The first three bits form a SYNC pulse, which behave differently than the
    // data bits. The FlexIO state machine will treat these bit positions special
    // due to the control bits loaded into SHIFTBUF2, do not use any other codes here.
-   if( sync == FLEX1553_COMMAND_WORD )
-      shiftData =  0xC0000000U; // 110b
+   if( sync == FLEX1553_DATA_WORD )
+      shiftData =  0x20000000U; // 001b   data sync
    else
-      shiftData =  0x20000000U; // 001b
+      shiftData =  0xC0000000U; // 110b   command/status sync
 
    // 20-bit word is placed at the top of the 32-bit shift register
    shiftData = shiftData | ((uint32_t)data << 13) | ((uint32_t)parity(data) << 12);
@@ -888,8 +889,8 @@ int FlexIO_1553TX::set_channel( int8_t ch )
 {
    uint32_t time;
    bool    chA_on, chB_on;
-   int8_t  chPairA = m_chanToPinPair[FLEX1553_CH_A];  // this is an index into the m_pair[] array of structures
-   int8_t  chPairB = m_chanToPinPair[FLEX1553_CH_B];
+   int8_t  chPairA = m_chanToPinPair[FLEX1553_BUS_A];  // this is an index into the m_pair[] array of structures
+   int8_t  chPairB = m_chanToPinPair[FLEX1553_BUS_B];
 
    // this function changes the pin MUX to enable or disable the
    // outputs from the 1553 state machine. When enabled, these two
@@ -908,17 +909,17 @@ int FlexIO_1553TX::set_channel( int8_t ch )
          chA_on = false;
          chB_on = false;
          break;
-      case FLEX1553_CH_A:
+      case FLEX1553_BUS_A:
          chA_on = true;
          chB_on = false;
          break;
-      case FLEX1553_CH_B:
+      case FLEX1553_BUS_B:
          chA_on = false;
          chB_on = true;
          if(chPairB == -1)
             return -3; // channel B has not been configured
          break;
-      case FLEX1553_CH_ALL:
+      case FLEX1553_BUS_ALL:
          chA_on = true;
          chB_on = true;
          break;
@@ -932,7 +933,7 @@ int FlexIO_1553TX::set_channel( int8_t ch )
    if(chPairB == -1)
       chB_on = false;
 
-    //if( ch != FLEX1553_CH_A && ch != FLEX1553_CH_B && ch != FLEX1553_CH_ALL )
+    //if( ch != FLEX1553_BUS_A && ch != FLEX1553_BUS_B && ch != FLEX1553_BUS_ALL )
     //  return -3;  // invalid input
 
    // double check that the pin pair is allowed
@@ -997,6 +998,12 @@ int FlexIO_1553TX::set_channel( int8_t ch )
 
    m_chan = ch;
    return( 0 );
+}
+
+
+int8_t FlexIO_1553TX::get_channel(void)
+{
+   return m_chan;
 }
 
 

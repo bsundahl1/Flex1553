@@ -2,7 +2,11 @@
 #include <Flex1553.h>
 
 // This class implements a 1553 receiver in one FlexIO module of the
-// NXP i.MXRT1062 processor
+// NXP i.MXRT1062 processor. This is a physical layer only, it does not
+// know the meaning of a packet, or any of the control bits other than
+// parity. There is no synchronization with the transmit module.
+// For information on FlexIO, refer to the reference manual (IMXRT1060RM)
+// Chapter 50.
 
 
 // 7/12/21  change to a 48MHz clock so we can derive 6MHz from timers
@@ -12,12 +16,12 @@
 // 1/02/22  Added changes for "Match Continuous mode", RX working
 // 2/13/22  Added interrupt routine to capture RX data
 // 2/20/22  Changed 5MHz source from Timer2 to Timer5
-//          Configure Timer2 to trigger EOT interrupt
+// 7/10/22  Configure Timer2 to trigger EOR interrupt
 
 
 // Bug list
 // finish enable() and disable()
-// add one more timer to trigger interrupt at end of transmission
+// use DMA controller to store data from FlexIO receiver
 
 
 #define REVERSE_LOOKUP   true
@@ -102,7 +106,10 @@ static volatile uint8_t  g_rxDataCount[4] = {0};  // keep track of how many word
 static volatile uint32_t g_rxData[4][33];  // RX data buffer, 33 words (including command) is the longest valid packet
 static volatile uint32_t g_rxFault[4][33];
 
-
+// these interrupt routines are defaults, which will move captured receive
+// data to a memory buffer. data is read from the buffer with the read() function.
+// these ISR's can be overridden with attachInterrupt() for use with a higher
+// code layer.
 static void isrFlex1_1553Rx(void)
 {
    int flags =  FLEXIO1_SHIFTSTAT; // read FlexIO shifter flags
@@ -535,8 +542,9 @@ bool FlexIO_1553RX::config_flex(void)
 
 
   // setup flex timer 2 *****************************************************
-  // this timer watches for the end of transmission
-  // this timer will be reset by Shifter3 every time a new word is received,
+  // this timer watches for the end of receive (end of transmission from the other end).
+  // if we dont see a new SYNC in 21us, it is safe to assume that the transmission has ended.
+  // this timer will be reset by Shifter3 every time a new word is received (every 20 us),
   // so this timer will not timeout until after transmission has ended.
   // it is clocked from the FlexIO clock
   // it is enabled by Timer1
@@ -551,7 +559,7 @@ bool FlexIO_1553RX::config_flex(void)
            FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
 
    m_flex->TIMCFG[2]    =
-           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
            FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
            FLEXIO_TIMCFG_TIMRST( 6 )      |        // reset timer on trigger rising edge
            FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
@@ -666,14 +674,16 @@ bool FlexIO_1553RX::config_flex(void)
    m_flex->TIMCMP[5]    =    0x0003U;
 
 
-   // setup flex timer 7 *****************************************************
-   // for debug only
-   // this just passes the trigger thru to an IO pin for debug
+   // Setup flex timer 7 *****************************************************
+   // For debug, this passes the sync pulse (from Shifter3) thru to an IO pin for debug
+   // It is also used as the sync interrupt source. The sync detector (Shifter3) can
+   // produce an interrupt, but in Match Continuous Mode, it does not latch. This means
+   // that if the system is busy with another interrupt, this interrupt can be missed.
+   // By passing the sync thru a timer, and using the timer interrupt (which does latch)
+   // is solves this problem.
    // it is always enabled
    m_flex->TIMCTL[7]    =
            FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
-           //FLEXIO_TIMCTL_TRGSEL( 3 )     |        // Timer 0 output =(N * 4) + 3
-           //FLEXIO_TIMCTL_TRGSEL(m_f_Pin * 2)      |        // Input Pin 4 =(N * 2)
            //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
            FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
            FLEXIO_TIMCTL_PINCFG(PIN_ENA)  |        // timer pin output enabled
@@ -910,6 +920,7 @@ unsigned long FlexIO_1553RX::get_status( void )
 
 
 
+// reads directly from the FlexIO data register
 unsigned long FlexIO_1553RX::read_data( void )
 {
   // make sure Flex clock is enabled

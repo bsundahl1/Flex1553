@@ -1711,8 +1711,8 @@ bool MIL_1553_packet::setData(uint8_t index, uint16_t data)
 // if writing data one word at a time, the word count must be set here
 bool MIL_1553_packet::setWordCount(uint8_t wc)
 {
-   if(wc < 1)  return false;  // abort if word count out of range
-   if(wc > 32) return false;
+   if(wc > 32) return false;  // abort if word count out of range
+   if(wc == 0) wc = 32;    // in the 1553 standard, WC=0 means 32 words
 
    wordCount = wc;
    return true;
@@ -1759,7 +1759,19 @@ bool MIL_1553_packet::getData(uint16_t *data, uint8_t size)
 
 String MIL_1553_packet::getData(void)
 {
-   return false;
+   return String((char *)&payload[0]);
+
+
+   //   int len = str.length();
+   //if(len > PORTTEST_MAX_ECHO_SIZE)
+   //   return false;
+   //else {
+   //   for(int i=0; i<=len; i++) {
+   //      echo_reg[i] = str[i];
+   //   }
+   //}
+   return true;
+
 }
 
 
@@ -1771,7 +1783,12 @@ uint16_t MIL_1553_packet::getData(uint8_t index)
 
 
 uint8_t MIL_1553_packet::getWordCount(void)
-{  return wordCount; }
+{
+   if(wordCount == 0)
+      return 32;
+   else
+      return wordCount;
+}
 
 
 uint8_t MIL_1553_packet::getRta(void)

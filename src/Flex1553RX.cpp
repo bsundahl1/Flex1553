@@ -317,7 +317,8 @@ bool FlexIO_1553RX::begin( void )
    // Enable RX interrupt routine
    switch(m_flex_num) {
       case FLEXIO1:
-         FlexIO_Base::attachInterrupt(isrFlex1_1553Rx);
+         //FlexIO_Base::attachInterrupt(isrFlex1_1553Rx);
+         FlexIO_Base::attachInterruptCallback(isrFlex1_1553Rx);
          break;
       case FLEXIO2:
          //FlexIO_Base::attachInterrupt(isrFlex2_1553Rx);
@@ -325,7 +326,8 @@ bool FlexIO_1553RX::begin( void )
          //FlexIO_Base::enableCallback();
          break;
       case FLEXIO3:
-         FlexIO_Base::attachInterrupt(isrFlex3_1553Rx);
+         //FlexIO_Base::attachInterrupt(isrFlex3_1553Rx);
+         FlexIO_Base::attachInterruptCallback(isrFlex3_1553Rx);
          break;
    }
    FlexIO_Base::enableInterruptSource(FLEXIO_SHIFTERS, 1);

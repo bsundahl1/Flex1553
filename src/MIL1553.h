@@ -35,6 +35,8 @@ class MIL_1553_packet
    public:
       #define UNKNOWN   0xff;
 
+      MIL_1553_packet(void);
+
       enum packetStatus_t { ST_NONE, ST_OK, ST_PENDING, ST_ERROR, ST_TIMEOUT };
 
       bool clear(void);
@@ -44,11 +46,12 @@ class MIL_1553_packet
       // write data to packet as a buffer
       bool setData(uint16_t *data, uint8_t wc);
 
-      // write a string to packet
-      bool setData(String str);
-
       // write data to packet one word at a time, using 'index' to specify word
-      bool setData(uint8_t index, uint16_t data);
+      bool setWord(uint8_t index, uint16_t data);
+
+      // write a string to packet
+      bool setString(String str, uint8_t offset = 0);
+      bool setString(const char* str, uint8_t offset = 0);
 
       // if writing data one word at a time, the word count must be set here
       bool setWordCount(uint8_t wc);
@@ -64,7 +67,9 @@ class MIL_1553_packet
 
       uint16_t getData(uint8_t index);
       bool     getData(uint16_t *data, uint8_t size);
-      String   getData(void);
+      //String   getData(void);
+      String   getString(uint8_t offset = 0);
+
       uint8_t  getWordCount(void);
       uint8_t  getRta(void);
       uint8_t  getSubAddress(void);
@@ -98,6 +103,7 @@ class MIL_1553_packet
       bool     bitFault  = false;
       packetStatus_t status = ST_NONE;
 
+      bool isEven(int val);
 
 };
 
@@ -196,6 +202,7 @@ class MIL_1553_RT
       MIL_1553_packet*  mailAvailable(void);  // checks all mailboxes for new incoming mail
       bool mailSent(uint8_t subAddress);
       MIL_1553_packet*  mailSent(void);
+      MIL_1553_packet*  getPacket(uint8_t subAddress, bool outgoing);
       bool useBus(uint8_t busForTx, uint8_t busForRx);
       bool unlock(uint8_t subAddress, bool outgoing);
       void dumpInternalState(void);  // for debug
@@ -204,6 +211,7 @@ class MIL_1553_RT
       bool errorAvailable(void);
       uint8_t getErrCode(void);
       void printErrReport(void);
+      void dumpPacket(int sa);
 
 
    protected:

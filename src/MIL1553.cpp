@@ -54,18 +54,10 @@ FlexIO_1553TX   * MIL_1553_BC::gFlexIO_tx0 = NULL;  // allocate memory for stati
 FlexIO_1553RX   * MIL_1553_BC::gFlexIO_rx0 = NULL;
 FlexIO_1553RX   * MIL_1553_BC::gFlexIO_rx1 = NULL;
 MIL_1553_packet * MIL_1553_BC::gPacket     = NULL;
-MIL_1553_RT     * gRTBusB = NULL;
+//MIL_1553_RT     * gRTBusB = NULL;
 
 
 
-//bool    MIL_1553_RT::beginOk = false;
-//bool    MIL_1553_RT::txActiveFlag = false;
-//uint8_t MIL_1553_RT::gWordsSentOnTX = 0;      // counter incremented by TX ISR to count TX words
-//uint8_t MIL_1553_RT::gWordsReceivedOnRX = 0;  // counter incremented by RX0 ISR to count RX0 words
-//uint8_t MIL_1553_RT::gWordsReceivedOnRX1 = 0;  // counter incremented by RX1 ISR to count RX1 words
-//uint8_t MIL_1553_RT::gWordsToSend = 0;         // used by TX ISR, tells TX when to stop
-//uint8_t MIL_1553_RT::gWordsToGetRX = 0;       // used by RX0 ISR, tells RX0 when to stop
-//uint8_t MIL_1553_RT::gWordsToGetRX1 = 0;       // used by RX1 ISR, tells RX1 when to stop
 int8_t MIL_1553_RT::activeTxBus = FLEX1553_BUS_A;
 FlexIO_1553TX   * MIL_1553_RT::gFlexIO_tx  = NULL;  // allocate memory for static variables
 FlexIO_1553RX   * MIL_1553_RT::gFlexIO_rxA = NULL;
@@ -74,8 +66,6 @@ MIL_1553_RT     * MIL_1553_RT::gRTBusA     = NULL;
 MIL_1553_RT     * MIL_1553_RT::gRTBusB     = NULL;
 
 const int debugPin  = 38;
-//MIL_1553_packet *mailboxOutPacket[32];  // pointers to packets assigned to mailboxes
-//MIL_1553_packet *mailboxInPacket[32];
 
 
 
@@ -229,7 +219,7 @@ void MIL_1553_BC::isrCallbackRx0(void)
       else if(gWordsReceivedOnRX0 < gWordsToGetRX0) {
          //digitalisrFlex3_defaultdebugPin, 1);  // debug
          // all other words must be DATA words
-         gPacket->setData(gWordsReceivedOnRX0 - 1, (uint16_t)data);
+         gPacket->setWord(gWordsReceivedOnRX0 - 1, (uint16_t)data);
          gWordsReceivedOnRX0++;
          //digitalisrFlex3_defaultdebugPin, 0);  // debug
       }
@@ -329,7 +319,7 @@ void MIL_1553_BC::isrCallbackRx1(void)
       else if(gWordsReceivedOnRX1 < gWordsToGetRX1) {
          //digitalisrFlex3_defaultdebugPin, 1);  // debug
          // all other words must be DATA words
-         gPacket->setData(gWordsReceivedOnRX1 - 1, (uint16_t)data);
+         gPacket->setWord(gWordsReceivedOnRX1 - 1, (uint16_t)data);
          gWordsReceivedOnRX1++;
          //digitalisrFlex3_defaultdebugPin, 0);  // debug
       }
@@ -611,6 +601,24 @@ bool MIL_1553_RT::begin(uint8_t rta)
    pFlexIO_rx->enableInterruptSource(FLEX1553RX_RECEIVER_FULL_INTERRUPT);
    pFlexIO_rx->enableInterruptSource(FLEX1553RX_END_OF_RECEIVE_INTERRUPT);
 
+   //Serial.print("  gRTBusA=");
+   //Serial.print((long)gRTBusA, HEX);
+   //Serial.print("  gRTBusB=");
+   //Serial.print((long)gRTBusB, HEX);
+   //Serial.print("  myBus=");
+   //Serial.print(myBus);
+   //Serial.println();
+   //Serial.print(" gFlexIO_tx =");
+   //Serial.print((long)gFlexIO_tx, HEX);
+   //Serial.print("  gFlexIO_rxA=");
+   //Serial.print((long)gFlexIO_rxA, HEX);
+   //Serial.print("  gFlexIO_rxB=");
+   //Serial.print((long)gFlexIO_rxB, HEX);
+   //Serial.print("  pFlexIO_rx=");
+   //Serial.print((long)pFlexIO_rx, HEX);
+   //Serial.println();
+   //Serial.println();
+
    return(result);
 }
 
@@ -638,6 +646,16 @@ void MIL_1553_RT::isrCallbackRxA(void)
    else if(tFlags & 0x04) // RX_EOR = Timer2
       intrpt = INT_RX_EOR;
 
+   //Serial.print("  Callback RXA   INT=");
+   //Serial.print(intrpt);
+   //Serial.print("  shifters=");
+   //Serial.print(sFlags);
+   //Serial.print("  timers=");
+   //Serial.print(tFlags);
+   //Serial.print("  gRTBusA=");
+   //Serial.print((long)gRTBusA, HEX);
+   //Serial.println();
+
    // now call the state machine, which is NOT a static function
    if(gRTBusA != NULL)
       gRTBusA->isrRtStateMachine(intrpt);
@@ -656,10 +674,20 @@ void MIL_1553_RT::isrCallbackRxB(void)
    // where did this interrupt come from?
    if(sFlags & 0x02) // RX_FULL = Shifter1
       intrpt = INT_RX_FULL;
-   else if(sFlags & 0x08) // RX_SYNC = Shifter3
+   else if(tFlags & 0x80) // RX_SYNC = Shifter3
       intrpt = INT_RX_SYNC;
    else if(tFlags & 0x04) // RX_EOR = Timer2
       intrpt = INT_RX_EOR;
+
+   //Serial.print("  Callback RXB   INT=");
+   //Serial.print(intrpt);
+   //Serial.print("  shifters=");
+   //Serial.print(sFlags);
+   //Serial.print("  timers=");
+   //Serial.print(tFlags);
+   //Serial.print("  gRTBusB=");
+   //Serial.print((long)gRTBusB, HEX);
+   //Serial.println();
 
    // now call the state machine, which is NOT a static function
    if(gRTBusB != NULL)
@@ -772,6 +800,7 @@ void MIL_1553_RT::isrRtStateMachine(intrpt_t intrpt)
             msgSA    = (cmd >> 6) & 0x1f;  // get subaddress
             msgTrans = (cmd >> 11)& 0x01;  // get  T/R flag
             msgWC    = (cmd >> 1) & 0x1f;  // get word count
+            if(msgWC == 0) msgWC = 32;
 
             // match this with a mailbox/packet class
             if(msgTrans == MIL_1553_TR_RCV) {  // receive = incoming to RT
@@ -848,7 +877,7 @@ void MIL_1553_RT::isrRtStateMachine(intrpt_t intrpt)
 
             // if no problems, copy the data to the packet
             if(!nfuFlag && !msgErrFlag && !phyErrFlag && !pPacket->isBusy()) {
-               pPacket->setData(wordsReceivedOnRX++, (uint16_t)data);
+               pPacket->setWord(wordsReceivedOnRX++, (uint16_t)data);
                pPacket->setRxCount(wordsReceivedOnRX);
             }
             break;
@@ -871,6 +900,7 @@ void MIL_1553_RT::isrRtStateMachine(intrpt_t intrpt)
             // if no problems, send the status word
             if(!nfuFlag && !phyErrFlag && msgErrFlag != 3) {
                gFlexIO_tx->set_channel(myBus); // set proper BUS
+               activeTxBus = myBus;  // this steers the TX interrupt back to this instance
                gFlexIO_tx->enableInterruptSource(FLEX1553TX_END_OF_TRANSMIT_DELAYED_INTERRUPT);
                if(pPacket)
                   pPacket->setStatusWord(status);
@@ -888,7 +918,17 @@ void MIL_1553_RT::isrRtStateMachine(intrpt_t intrpt)
          }
 
          if(intrpt == INT_RX_SYNC) {
-            // these interrupts are expected, but are not used
+            // This is bug fix.
+            // I had intended for the EOR interrupt to determine the end of the receive
+            // data, not the word count. However it turns out that when the BC transmitter
+            // turns off, the bus floats high with timing that looks very much like a
+            // data sync. Sometimes our sync detector will catch that edge and expect
+            // another data word, causing the whole transaction to fail.
+            // This fix changes the sync type while receiving the last data word, which
+            // prevents the sync detector from being fooled.
+            if(wordsReceivedOnRX == (msgWC  -1)) // if next to last word has been received
+               // we are now receiving the last data word
+               pFlexIO_rx->set_sync(FLEX1553_COMMAND_WORD);  // set receiver to watch for commands
             clearInterrupt(INT_RX_SYNC);
             break;
          }
@@ -939,6 +979,7 @@ void MIL_1553_RT::isrRtStateMachine(intrpt_t intrpt)
 
             // if no problems, send the status word
             gFlexIO_tx->set_channel(myBus); // set proper BUS
+            activeTxBus = myBus;  // this steers the TX interrupt back to this instance
             if(!nfuFlag && !phyErrFlag && !msgErrFlag) {
                // enable TX interrupts
                gFlexIO_tx->enableInterruptSource(FLEX1553TX_END_OF_TRANSMIT_DELAYED_INTERRUPT);
@@ -1169,7 +1210,7 @@ bool MIL_1553_RT::openMailbox(uint8_t subAddress, uint8_t wordCount, bool outgoi
 
    // set packet attributes
    packet->locking = lock;
-   //packet->newMail = false;
+   packet->newMail = false;
    packet->setRta(myRta);
    packet->setSubAddress(subAddress);
    packet->setWordCount(wordCount);
@@ -1189,7 +1230,6 @@ bool MIL_1553_RT::openMailbox(uint8_t subAddress, uint8_t wordCount, bool outgoi
    }
 
    // make sure interrupts are enabled
-
 
    return true;
 }
@@ -1322,6 +1362,20 @@ MIL_1553_packet*  MIL_1553_RT::mailSent(void)
       }
    }
    return NULL;  // no new mail found
+}
+
+
+MIL_1553_packet*  MIL_1553_RT::getPacket(uint8_t subAddress, bool outgoing)
+{
+   if(subAddress > 31)
+      return NULL;  // invalid subaddress
+
+   if(outgoing) {
+      return mailboxOutPacket[subAddress];
+   }
+   else {
+      return mailboxInPacket[subAddress];
+   }
 }
 
 
@@ -1615,8 +1669,63 @@ void  MIL_1553_RT::dumpMailboxAssigments(void)
 
 
 
+// Dumps the packet content to the serial port
+// This is just to verify the packet content
+void MIL_1553_RT::dumpPacket(int sa)
+{
+   MIL_1553_packet *packet;
+   // since we use the same packets for both TX and RX, there is not
+   // reason to distinguish between the two
+
+   switch(sa)
+   {
+      case 1:
+      case 2:
+      case 3:
+      case 4:
+      case 5:
+         packet = mailboxOutPacket[sa];
+         break;
+
+      case 6:
+         packet = mailboxInPacket[sa];
+         break;
+
+      default:
+         return;
+   }
+
+   int wc = packet->getWordCount();
+
+   Serial.print(" RTA:");
+   Serial.print(packet->getRta());
+   Serial.print(" SA:");
+   Serial.print(packet->getSubAddress());
+
+   // print status word
+   Serial.print(", STATUS:0x");
+   Serial.print(packet->getStatusWord(), HEX);
+
+   // Dump out the packet data
+   Serial.print(", Payload[");
+   Serial.print(wc);
+   Serial.print("]:");
+   for(int i=0; i<wc; i++)
+   {
+      Serial.print(packet->getData(i), HEX);
+      Serial.print(" ,");
+   }
+   Serial.println();
+
+}
+
+
 /////////////////////////////////////////////////////////////////////////
 //                        MIL_1553_packet                              //
+
+
+MIL_1553_packet::MIL_1553_packet(void)
+{}
 
 
 // set transmit or receive type
@@ -1657,44 +1766,25 @@ bool MIL_1553_packet::clear(void)
 // write data to packet as a buffer
 bool MIL_1553_packet::setData(uint16_t *data, uint8_t wc)
 {
-   if(setWordCount(wc) == false)
-      return false;  // abort if word count out of range
+   //if(setWordCount(wc) == false)
+   //   return false;  // abort if word count out of range
+
+   if(wc > 32)  wc = 32;
+   // Serial.print("  count=");
+   // Serial.print(wc);
+   // Serial.print("  data=");
+   // Serial.println(data[0]);
 
    for(int i=0; i<wc; i++) {
       payload[i] = data[i];
    }
-   newMail = true;
-   return true;
-}
-
-
-// packes a string, up to 64 charcters, into a 1553 packet (two bytes per word)
-bool MIL_1553_packet::setData(String str)
-{
-   int strIndex = 0;
-   uint16_t lowByte, highByte;
-   int strLen = str.length();   // characters in string
-   if(strLen > 64) strLen = 64;
-   int wc = (strLen + 1) / 2;    // 16-bit words needed in packet
-
-   for(int i=0; i<wc; i++) {
-      highByte  = str[strIndex++];   // put two 8-bit characters into each 16-bit word
-      if(strIndex < strLen)
-         lowByte = str[strIndex++];
-      else // if we have an odd number of characters in the string, set the last byte to 0
-         lowByte = 0;
-
-      setData(i, (highByte << 8) + lowByte);
-   }
-
-   wordCount = wc;
-   newMail = true;
+   //newMail = true;
    return true;
 }
 
 
 // write data to packet one word at a time, using 'index' to specify word
-bool MIL_1553_packet::setData(uint8_t index, uint16_t data)
+bool MIL_1553_packet::setWord(uint8_t index, uint16_t data)
 {
    if(index >= 32) return false; // abort if word count out of range
    payload[index] = data;
@@ -1704,6 +1794,51 @@ bool MIL_1553_packet::setData(uint8_t index, uint16_t data)
    //Serial.print(data, HEX);
    //Serial.println();
 
+   return true;
+}
+
+
+bool MIL_1553_packet::setString(const char* str, uint8_t offset)
+{
+   return setString(String(str), offset);
+}
+
+
+// packes a string, up to 64 charcters, into a 1553 packet (two bytes per word)
+// strings will be truncated to fit within the previously set wordCount
+// @param str      arduino String class
+// @param offset   optional offset (in bytes) to reserve payload space before string
+//                 must be an even number
+bool MIL_1553_packet::setString(String str, uint8_t offset)
+{
+   int strIndex = 0;
+   int allowedWC = 32;
+   if(wordCount) allowedWC = wordCount; // if the packet wordCount has been configured, use it.
+                                       // otherwise use 32 as a default. This allows initial data
+                                       // to be set before the wordCount has been configured.
+   uint16_t lowByte, highByte;
+   int strLen = str.length() + offset; // total string length in bytes
+   int wc = (strLen + 1) / 2;          // 16-bit words needed in packet
+   if(wc > allowedWC) wc = allowedWC;  // truncate string to maximum configured wordCount
+   offset = offset / 2;   // bytes to words (odd offset is not supported)
+
+   for(int i=offset; i<allowedWC; i++) {
+      if(i < wc) {   // copy string into buffer space between offset and wc
+         highByte  = str[strIndex++];   // put two 8-bit characters into each 16-bit word
+         if(strIndex < strLen)
+            lowByte = str[strIndex++];
+         else // if we have an odd number of characters in the string, set the last byte to 0
+            lowByte = 0;
+         //setWord(i, (highByte << 8) + lowByte);
+         payload[i] = (highByte << 8) + lowByte;
+      }
+      else        // fill end of payload with zeros
+         //setWord(i, 0);
+         payload[i] = 0;
+   }
+
+   //wordCount = wc;
+   //newMail = true;
    return true;
 }
 
@@ -1757,28 +1892,41 @@ bool MIL_1553_packet::getData(uint16_t *data, uint8_t size)
 }
 
 
-String MIL_1553_packet::getData(void)
-{
-   return String((char *)&payload[0]);
-
-
-   //   int len = str.length();
-   //if(len > PORTTEST_MAX_ECHO_SIZE)
-   //   return false;
-   //else {
-   //   for(int i=0; i<=len; i++) {
-   //      echo_reg[i] = str[i];
-   //   }
-   //}
-   return true;
-
-}
-
-
 uint16_t MIL_1553_packet::getData(uint8_t index)
 {
    if(index >= wordCount) return 0;  // if index out of range, just return zero
    return payload[index];
+}
+
+
+// similar to getData() but returns a String class
+// @param  offset to start of string within packet, in bytes.
+String MIL_1553_packet::getString(uint8_t offset)
+{
+   //return String(&((char *)payload)[offset]); // this works, but bytes are in reverse order
+   int stopByte = wordCount * 2;
+   if(stopByte == 0) stopByte = 64;  // default incase wordCount has not been configured yet
+
+   String str;
+   char nextByte;
+   for(int i=0; i<stopByte; i++) {
+      if(i >= offset) {  // copy data only if we are between offset and stopByte
+         if(isEven(i))   // if i is even then get the uppper half of the payload word
+            nextByte = payload[i/2] >> 8;   // get upper byte
+         else  // is odd
+            nextByte = payload[i/2] & 0xff; // get lower byte
+         str += nextByte;
+         if(nextByte == 0)
+            break;   // exit if NULL terminator found
+      }
+   }
+   return str;
+}
+
+
+bool MIL_1553_packet::isEven(int val)
+{
+   return !(val % 2);
 }
 
 

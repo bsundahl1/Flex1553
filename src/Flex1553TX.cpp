@@ -1,3 +1,8 @@
+// Flex1553
+// A MIL-STD-1553 library for Teensy 4
+// Copyright (c) 2022 Bill Sundahl
+// MIT License
+
 #include <Arduino.h>
 #include <Flex1553.h>
 
@@ -5,7 +10,6 @@
 // NXP i.MXRT1062 processor. This is a physical layer only, it does not
 // know the meaning of a packet, or any of the control bits other than
 // parity. There is no synchronization with the receive module.
-
 
 // 7/12/21  change to a 48MHz clock so we can derive 6MHz from timers
 // 9/10/21  reconfigured code to use C++ class instead of standard C
@@ -31,9 +35,11 @@
                               // You will normally want to turn this off so that you can use
                               // these IO pins for other purposes.
 
+#ifndef __IMXRT1062__
+   #error "This code requires the use of FlexIO hardware, found on the i.MXRT 106x processors"
+#endif
 
-
-// assign flex data line resources to outputs. some of the are used internally
+// assign flex data line resources to outputs. some of these are used internally
 // others are just brought out for debug. Note that flex FXIO_D[7:0] are reserved
 // for the state machine outputs.
 #define FLEX1_1553TX_D_SHFT1_OUT 10    // routes shifter to state machine  (not accessable on teensy pin)

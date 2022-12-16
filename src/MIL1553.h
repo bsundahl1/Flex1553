@@ -1,3 +1,8 @@
+// Flex1553
+// A MIL-STD-1553 library for Teensy 4
+// Copyright (c) 2022 Bill Sundahl
+// MIT License
+
 #pragma once
 
 #include <Flex1553.h>

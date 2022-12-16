@@ -1,9 +1,10 @@
 // This is a simple base class to use with a single FlexIO module
 
-// Also check out KurtE's FlexIO library, harder to understand, but more sophisticated
+// Also check out KurtE's FlexIO library. harder to understand, but more sophisticated
 // https://github.com/KurtE/FlexIO_t4/tree/master/src/FlexIO_t4.cpp
 
-
+// for a crash course in FlexIO, see miciwan's excellent 'getting started' writeup
+// https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO
 
 #pragma once
 

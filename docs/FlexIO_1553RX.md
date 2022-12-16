@@ -1,5 +1,11 @@
 FlexIO 1553 Receive class
 ==========================
+
+This class implements a 1553 receiver in one FlexIO module of the NXP
+i.MXRT1062 processor. This is a physical layer only, it does not know the
+meaning of a packet, or any of the control bits other than parity. There is
+no synchronization with the transmit module.
+
 ## Background
 MIL-STD-1553 is a serial communication protocol developed for the military
 in the late 1970's, and is still used today in many military vehicles and
@@ -13,6 +19,18 @@ recent years, with an FPGA. FlexIO gives us a new tool to use for custom or
 uncommon protocols. This might not be a military grade solution, but it is
 good enough to provide basic communicate with 1553 devices, at least for
 test purposes.
+
+### RX Pins
+
+Each receive channel requires one FlexIO module. These are the pins which
+may be used for the data receive line:
+
+     Teensy 4.1
+      FlexIO_1          FlexIO_2         FlexIO_3
+       2,3,4,5,33        6,9,11,13        14,15,16,17,20,21,22,23,40,41
+
+This is configured by the receiver class constructor, FlexIO_1553RX().
+
 
 ## Hardware restrictions
 

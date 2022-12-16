@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include <FlexIOBase.h>
 
+#ifndef __IMXRT1062__
+   #error "This code requires the use of FlexIO hardware, found on the i.MXRT 106x processors"
+#endif
 
 ////////////////////////////////////////////////////////////////
 /////////////// Start of Interrupt Routines ////////////////////

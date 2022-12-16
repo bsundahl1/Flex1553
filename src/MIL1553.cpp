@@ -1,3 +1,8 @@
+// Flex1553
+// A MIL-STD-1553 library for Teensy 4
+// Copyright (c) 2022 Bill Sundahl
+// MIT License
+
 /*
    Packet level interface to MIL-STD-1553 transceiver. Lower level classes
    (Flex1553RX & TX) are directly controlling FlexIO hardware, either a
@@ -625,7 +630,7 @@ bool MIL_1553_RT::begin(uint8_t rta)
 
 // ISR's are always static, meaning that these routines are shared amoung all
 // instances of MIL_1553_RT. This copy is used for bus A.
-// Each of these three ISR's is attached to a different FlexIO module.
+// Each of these ISR's is attached to a different instance of the MIL_1553_RT class.
 // It just detrmines which interrupt flag was triggered, and then
 // calls isrRtStateMachine() to do the real work.
 void MIL_1553_RT::isrCallbackRxA(void)

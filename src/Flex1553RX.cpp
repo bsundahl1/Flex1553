@@ -1,3 +1,8 @@
+// Flex1553
+// A MIL-STD-1553 library for Teensy 4
+// Copyright (c) 2022 Bill Sundahl
+// MIT License
+
 #include <Arduino.h>
 #include <Flex1553.h>
 
@@ -5,7 +10,7 @@
 // NXP i.MXRT1062 processor. This is a physical layer only, it does not
 // know the meaning of a packet, or any of the control bits other than
 // parity. There is no synchronization with the transmit module.
-// For information on FlexIO, refer to the reference manual (IMXRT1060RM)
+// For information on FlexIO, refer to the NXP reference manual (IMXRT1060RM)
 // Chapter 50.
 
 
@@ -37,6 +42,9 @@
                               // You will normally want to turn this off so that you can use
                               // these IO pins for other purposes.
 
+#ifndef __IMXRT1062__
+   #error "This code requires the use of FlexIO hardware, found on the i.MXRT 106x processors"
+#endif
 
 /***************************************************************************************
 *    Start of 1553 RX Class

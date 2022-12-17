@@ -1,0 +1,31 @@
+
+1553 TX
+      //   Class Constructor
+      // due to the way that FlexIO uses pins in State Machine mode, these are the only
+      // combinations of pins available for TX (order is positive, negative):
+      // Teensy 4.1
+      //    FlexIO_1          FlexIO_2           FlexIO_3
+      //     pair1: n/a      x pair1: 10,12       pair1: 19,18
+      //     pair2: n/a      x pair2: 11,13       pair2: 14,15
+      //   x pair3: 2,3        pair3: n/a         pair3: 40,41
+      //   x pair4: 4,33       pair4: n/a         pair4: 17,16
+
+
+
+1553 RX
+      //   Class Constructor
+      // due to the way that FlexIO uses pins in State Machine mode, these are the only
+      // pins that may be used for the data receive line
+      // Teensy 4.1
+      //    FlexIO_1          FlexIO_2           FlexIO_3
+      //       2              x 11                x 14
+      //       3              x 13                x 15
+      //       4              x  6                x 40
+      //       5              x  9                x 41
+      //      33                                  x 16
+      //                                          x 17
+      //                                          x 20
+      //                                          x 21
+      //                                          x 22
+      //                                          x 23
+

@@ -1,0 +1,13 @@
+FlexIO Match and Store Mode
+
+This works pretty much as indicated in the datasheet, and is very similar to receive mode. The shifter has to be triggered to capture data, and has to be stopped (disabled) to check the data. When stopped, it will check for a match with the pattern in ShiftBuf. If there is a match in all of the non-masked bits, two things happen:
+1) The last 16 bits shifted in are saved in ShiftBuf[31:16]. Of course, only the masked bits will change, since the non-masked bits are already known. The lower 16 bits (the mask bits) are not changed.
+2) The status flag is set. This will prevent any further data being written to the ShiftBuf until the flag is cleared (by reading the ShiftBuf register).
+
+If the data does NOT match, nothing happens. The next time the shifter is enabled, it will try again to match the shifted data to the ShiftBuf pattern.
+
+This mode could be used to capture a sync word within a data stream, but it must have well defined framing. The captured bit pattern could be correct, but if it is shifted off by one bit, the match will fail.
+
+If less than 16 bits are being shifted, mask to unused bits in the ShiftBuf or the match might fail. Data is shifted LSB first, but it is the upper bits of the ShiftBuf that are used as the match.
+There seems to be one extra clock after the data matches, before it is stored (or at least before the flag is set)
+

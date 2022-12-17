@@ -1,0 +1,2705 @@
+#include <Arduino.h>
+#include <Flex1553.h>
+
+// Optional build flags:
+//#define FLEX01_DEBUG  // brings out optional debug pins
+#define FLEX02_DEBUG  // uncomment to bring out debug pins
+#define FLEX03_DEBUG  // brings out optional debug pins
+#define FLEX01_TX_CHB // enable transmit on both A and B channels
+   // if not defined, only channel A output pins will be used
+
+// 7/12/21  change to a 48MHz clock so we can derive 6MHz from timers
+
+
+uint8_t parity( uint32_t data );
+
+bool just_configured1 = false;  // used by Flex1553TX
+bool just_configured2 = false;  // used by Flex2_1553TX
+int  channel_config   = 0;
+
+
+
+// NEEDS UPDATED
+// Configures FlexIO1 as a 1553 transmitter
+// @return  always returns zero
+int Flex1553TX_config(void)
+{
+  // pins used by this module
+  #define FLEX1_1553_PIN_TIM0_OUT  8     // for debug only
+  #define FLEX1_1553_PIN_TIM1_OUT  14    // for debug only
+     // the following 3 pins must stay sequential, they are used as
+     // inputs to the state machine
+  #define FLEX1_1553_PIN_SHFT1_OUT 10    // not accessable on Teensy
+  #define FLEX1_1553_PIN_SHFT2_OUT 11    // not accessable on Teensy
+  #define FLEX1_1553_PIN_TIM2_OUT  12    // for debug only
+  #define FLEX1_1553_PIN_TIM7_OUT  13    // for debug only
+  // four more pins are used for the state machine output
+  // but they are pre-assigned to FlexIO[7:4] and configured
+  // in a different way
+
+  // setup flex clock
+  // the Flex clock MUST BE CONFIGURED FIRST. Accessing and Flex register without
+  // a clock, will hang the code.
+  // The default clock speed is 30MHz and I need 2MHz, so I would like to use
+  // my baud rate divider to divide by 15. Unfortanuatly, the way the baud
+  // dividers work, you need can only divide by an even number. So I need
+  // to change the flex clock speed.
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_OFF);      // disable clock
+  CCM_CDCDR &= ~( CCM_CDCDR_FLEXIO1_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CDCDR |= CCM_CDCDR_FLEXIO1_CLK_PODF( 5 );     // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/2/(N+1)
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO1 (clock MUST be enabled or this will hang)
+  FLEXIO1_CTRL |= 2;    // reset Flex module
+  FLEXIO1_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+
+  // setup pin mux to route IO pins to FlexIO 1
+    // final output from state machine, channel A
+  digitalWrite(4, false);  // set the GPIO pins low
+  digitalWrite(5, false);  // but then set the MUX to FlexIO
+  pinMode(4, OUTPUT);      // we can then disable this channel
+  pinMode(5, OUTPUT);      // by changing the MUX back to GPIO
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO pin4    Teensy pin 2
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO pin5    Teensy pin 3
+  channel_config = FLEX1553_CH_A;
+#ifdef FLEX01_TX_CHB // enable transimit on both A and B channels
+    // final output from state machine, channel B
+  digitalWrite(6, false);
+  digitalWrite(7, false);
+  pinMode(6, OUTPUT);
+  pinMode(7, OUTPUT);
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO pin6    Teensy pin 4
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO pin7    Teensy pin 33
+  channel_config = FLEX1553_CH_BOTH;
+#endif
+#ifdef FLEX01_DEBUG
+    // inputs to state machine
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_10 = 4;      // FLEXIO pin10   Teensy pin n/a
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_11 = 4;      // FLEXIO pin11   Teensy pin n/a
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_26 = 4;     // FLEXIO pin12   Teensy pin 52
+    // Timer0 2MHz state machine clock
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_08 = 4;     // FLEXIO pin8    Teensy pin 5
+    // Data reg empty flag
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_27 = 4;     // FLEXIO pin13   Teensy pin 50
+    // Timer1 1MHz data clock
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_28 = 4;     // FLEXIO pin14   Teensy pin 50
+#endif
+
+  // State Machine **************************************************
+  // This uses five shifters as a five-state state machine to produce Manchester II
+  // biphase encoded data bits
+  //  state 0 = outputs disabled
+  //  state 4 = first  half of a "1" state
+  //  state 6 = second half of a "1" state
+  //  state 7 = first  half of a "0" state
+  //  state 5 = second half of a "0" state
+  // all 5 shifters are set the same, only the state tables are different
+
+  // setup state 0
+  FLEXIO1_SHIFTCTL0  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT1_OUT )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO1_SHIFTCFG0  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0x0 )  |        // enable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 3 );            // disable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+ // setup state 4
+  FLEXIO1_SHIFTCTL4  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT1_OUT )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO1_SHIFTCFG4  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0x0 )  |        // enable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 3 );            // disable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+
+ // setup state 5
+  FLEXIO1_SHIFTCTL5  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT1_OUT )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO1_SHIFTCFG5  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0x0 )  |        // enable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 3 );            // disable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+
+ // setup state 6
+  FLEXIO1_SHIFTCTL6  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT1_OUT )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO1_SHIFTCFG6  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0x0 )  |        // enable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 3 );            // disable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+
+ // setup state 7
+  FLEXIO1_SHIFTCTL7  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT1_OUT )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO1_SHIFTCFG7  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0x0 )  |        // enable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 3 );            // disable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+  // Two output bits from the state machine, FXIO_D[5:4], are used to pulse
+  // two FETs to drive an isolation transformer. The outputs are differential,
+  // causing a reversal of the current in the transformer primary for each bit.
+  // At the end of the transmission, the state machine goes to the "0" idle
+  // state which turns off both transistors.
+
+  // load state lookup table               output  : next state
+  FLEXIO1_SHIFTBUF0 =  0x009E7000U;  //  0000 0000 : 100 111 100 111 000 000 000 000b
+  FLEXIO1_SHIFTBUF4 =  0x51DADDADU;  //  0101 0101 : 110 110 101 101 110 110 101 101b
+  FLEXIO1_SHIFTBUF7 =  0xA2B76B76U;  //  1010 1010 : 101 101 110 110 101 101 110 110b
+  FLEXIO1_SHIFTBUF5 =  0x519E7000U;  //  0101 0101 : 100 111 100 111 000 000 000 000b
+  FLEXIO1_SHIFTBUF6 =  0xA29E7000U;  //  1010 1010 : 100 111 100 111 000 000 000 000b
+
+  // setup data shifter 1 **************************************************
+  // this is the data shifter. writing data to SHIFTBUF1 will trigger the transmit
+  // 21 bits are used. The first 3 (LSB) for the Sync, 16 bits of data, one parity,
+  // and the last bit (MSB) is used to turn off the transmitter
+  FLEXIO1_SHIFTCTL1  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // pin output enabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT1_OUT )   |        // FLEXIO pin 10    Teensy pin n/a
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 2 );              // transmit mode
+
+  FLEXIO1_SHIFTCFG1  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // setup data shifter 2 **************************************************
+  // this shfiter is used for control bits, which will modify the data
+  // both shifters shift data out at the same time
+  // A zero in this shifter causes the same bit postion in the data shifter
+  // to be output without transition. A one will cause the data bit to
+  // transition: 0 = 0 to 1, 1 = 1 to 0
+  FLEXIO1_SHIFTCTL2  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 1
+           // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // pin output enabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX1_1553_PIN_SHFT2_OUT )   |        // FLEXIO pin 11    Teensy pin n/a
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 2 );              // transmit mode
+
+  FLEXIO1_SHIFTCFG2  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // the control bits are always the same. remember LSB first
+  // the shifter will reload the same data each time TIMER1 is triggered
+  FLEXIO1_SHIFTBUF2 =  0x0ffffaU;  //   1111 1111 1111 1111 1010b;
+  //FLEXIO2_SHIFTBUF2 =  0x0000000U;   // for debug: SM should output raw data from shifter 1
+
+  // setup flex timer 1 *****************************************************
+  // this is a 2MHz clock to step the state machine
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by Shifter 1 status flag
+  FLEXIO1_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 5 )      |        // shifter 1 status flag =(1 * 4) + 1
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX1_1553_PIN_TIM0_OUT )     |        // timer pin 13, Teensy pin 49 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 1 )      |        // enable timer on Timer N-1
+           FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  //  41 shifts,  divide clock by 20     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (41*2-1)<<8  | (20/2-1)
+  //                                         (81)<<8  | (9)
+  //                                          0x5100  | 0x09
+  FLEXIO1_TIMCMP1    =    0x5109;
+
+  // setup flex timer 0 *****************************************************
+  // this is a 1MHz clock to step both shifters
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by Shifter 1 status flag
+  FLEXIO1_TIMCTL0    =
+           FLEXIO_TIMCTL_TRGSEL( 5 )      |        // shifter 1 status flag =(1 * 4) + 1
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX1_1553_PIN_TIM1_OUT )     |        // timer pin 14, Teensy pin 50 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG0    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 2 )      |        // enable timer on trigger high
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  We are shifting 20 bits of data, but the standard requires a minimum
+  //  of 4us between words (from center of last bit to center of next sync)
+  //  We force two extra clocks here, and two more are used at the startup
+  //  of the next word, providing 4us of hardware delay between words, plus
+  //  software overhead.
+  //  20 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (20*2-1)<<8  | (40/2-1)
+  //                                         (39)<<8  | (19)
+  //                                          0x2700  | 0x13
+  FLEXIO1_TIMCMP0    =    0x2813;
+
+  // setup flex timer 2 *****************************************************
+  // this timer sets the delay until the output disable
+  // the output is the Enable input to the state machine
+  // it is clocked from timer 0
+  // it is enabled by timer 1
+  FLEXIO1_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 7 )      |        // triggered by Timer 1 trigger output =(1 * 4) + 3
+           //FLEXIO_TIMCTL_TRGPOL           |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX1_1553_PIN_TIM2_OUT )     |        // timer pin 12 (wired to state machine)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer
+
+  FLEXIO1_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 1 )      |        // Decrement counter on Trigger input (both edges)
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // Timer disabled on timer compare
+           FLEXIO_TIMCFG_TIMENA( 1 )      |        // Timer enabled on Timer N-1 enable
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  FLEXIO1_TIMCMP2    =    80;   // timer 0 clocks, both edges
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO1_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 5 )     |        // Shifter1 status flag =(1 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX1_1553_PIN_TIM7_OUT )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // enable FLEXIO1
+  FLEXIO1_CTRL |= 1;    // enable FLEXIO1 module
+  just_configured1 = true;
+
+  return( 0 );
+}
+
+
+
+// Sends one command word on bus, using FlexIO1
+// If transmitter is busy, this will wait for it to become avilable.
+// @param  rdaddress:   address of the device to send to
+// @param  subaddress:  register number to send data to
+// @param  wordcount:   number of data bytes to follow (1 to 32)
+// @return error code:  0=success, -1=Flex clock disabled, -2=timeout
+int Flex1553TX_send_command( byte rtaddress, byte subaddress, byte wordcount )
+{
+   uint16_t data;
+
+   data = (rtaddress & 0x1f) << 11 | (subaddress & 0x1f) << 5 | (wordcount & 0x1f);
+   return( Flex1553TX_send( FLEX1553_COMMAND_WORD, data) );
+}
+
+
+
+// Send one data word on bus, using FlexIO1
+// If transmitter is busy, this will wait for it to become avilable.
+// @param  data:   16-bit data
+// @return error code: 0=success, -1=Flex clock disabled, -2=timeout
+int Flex1553TX_send_data( uint16_t data )
+{
+   return( Flex1553TX_send( FLEX1553_DATA_WORD, data) );
+}
+
+
+
+// Generic send command
+// Sends one word on bus, using FlexIO1
+// If transmitter is busy, this will wait for it to become avilable.
+// @param  sync:   0=data sync, 1=command or status sync
+// @param  data:   16-bit data
+// @return error code: 0=success, -1=Flex clock disabled, -2=timeout
+int Flex1553TX_send( uint8_t sync, uint16_t data )
+{
+  uint32_t shiftData;
+  uint32_t time;
+  int status = 0;
+
+  // make sure Flex1 clock is enabled
+  if( (CCM_CCGR5 & 0xC) == 0 )
+    return( -1 );  // can not read status if FlexIO1 clock is disabled
+
+  // write output data to shifter
+  // The first three bits form a SYNC pulse, which behave differently than the
+  // data bits. The FlexIO state machine will treat these bit positions special
+  // due to the control bits loaded into SHIFTBUF2, do not use any other codes here.
+  if( sync == FLEX1553_COMMAND_WORD )
+    shiftData =  0xC0000000U; // 110b
+  else
+    shiftData =  0x20000000U; // 001b
+
+  shiftData = shiftData | ((uint32_t)data << 13) | ((uint32_t)parity(data) << 12);
+
+  // wait for transmitter avaliable
+  time = micros();
+  while(1) {
+    if( Flex1553TX_transmitter_busy() == 0 )
+      break;
+    if( (micros() - time) > 100 ) { // or timeout
+      status = -2;  // timeout
+      break;
+    }
+  }
+
+  //shiftData = FLEXIO3_SHIFTBUF3; // this is a dummy read to clear the RX shifter error flag
+
+  //  If all is well, send the data
+  if( status == 0 ) {
+    // the shifter sends LSB first, using BIS function reverses the bit
+    // order of the data, so effectively, we are sending MSB first.
+    FLEXIO1_SHIFTBUFBIS1 = shiftData;  // start transimision
+    FLEXIO1_TIMSTAT   = 7;          // reset timer status bits, these are used to determine when
+                                    // transmission is complete
+    just_configured1 = false;
+  }
+
+  return( status );
+}
+
+
+
+int Flex1553TX_transmitter_busy( void )
+{
+  int flags;
+  int status;
+
+  // the usual "tranmitter empty" flag does not seem to work with FlexIO
+  // writing the second word before the transmitter is done will cause it
+  // to stop working. The code does not hang, but the Flex module will
+  // no longer trigger, until it has been reset.
+  // There seem to be two valid flag states with this specific setup
+  // where flags = (FLEXIO2_TIMSTAT << 8) | FLEXIO2_SHIFTSTAT
+  //    each bit is a flag for one timer or shifter
+  // 0x0003 = immediatly after configuration, shifters 0 and 1 will show empty
+  //          shifter 2 was loaded by the configuration, so it shows full
+  //          timers have not been triggered, so their status is 0
+  //          BUT, this condition can also occur on subsiquent transmissions
+  //          durring the shift, tricking the code into thinking it is done.
+  // 0x0707 = after data has been sent and transmission is complete
+  //          shifters 0, 1 and 2 all show empty
+  //          timers 0, 1, and 2 show a timeout
+  //          BUT, the processor is so crazy fast, it can check this status again
+  //          and load a second word into the transmitter, before the HARDWARE
+  //          has time to clear the status flags! So the timer flags must be
+  //          cleared by software after writing the FLEXIO2_SHIFTBUF1 reg
+  // Any other status indicates that the FlexIO transmit is not done
+
+  // make sure Flex1 clock is enabled
+  if( (CCM_CCGR5 & 0xC) == 0 )
+    return( -1 );  // can not read status if FlexIO1 clock is disabled
+
+  flags = (FLEXIO1_TIMSTAT << 8) | FLEXIO1_SHIFTSTAT; // will hang if Flex clock not enabled
+  //if( flags == 0x0707 ) // normal flags
+  if( flags & 2 ) // data shifter empty
+    status = 0;
+  else if( (flags == 3) && just_configured1 ) // only used by the first write
+    status = 0;
+  else
+    status = 1;  // not ready
+
+  return( status );
+}
+
+
+// get status flags for 8 timers and 8 shifters in FlexIO1
+// @return  8 timer flags : 8 shifter flags (one byte for each)
+unsigned long Flex1553TX_get_status( void )
+{
+  unsigned long flags;
+
+  // make sure Flex1 clock is enabled
+  if( (CCM_CCGR5 & 0xC) == 0 )
+    return( -1 );  // can not read status if FlexIO1 clock is disabled
+
+  //flags = (FLEXIO1_TIMSTAT << 8) | FLEXIO1_SHIFTSTAT; // will hang if Flex clock not enabled
+  flags = (FLEXIO1_SHIFTERR << 16) | (FLEXIO1_SHIFTSTAT << 8) | FLEXIO1_TIMSTAT;
+  FLEXIO1_SHIFTERR  = 0xff;  // clear flags
+  FLEXIO1_SHIFTSTAT = 0xff;
+  FLEXIO1_TIMSTAT   = 0xff;
+  return( flags );
+}
+
+
+
+// Controls the pin MUX to enable or disable the 1553 outputs.
+// If transmitter is busy, this will wait for it to empty before changing the outputs.
+// @param  ch:   1=transmit on channel A, 2=channel B, 3=transimt on both
+// @return error code: 0=success, -1=Flex clock disabled, -2=timeout, -3=illegal configuration
+int Flex1553TX_set_channel( int ch )
+{
+  uint32_t time;
+
+  // this function changes the pin MUX to enable or disable the
+  // outputs from the 1553 state machine. When enabled, these two
+  // differential outputs have identical information on them, and
+  // when disabled, they have zeros from the GPIO drivers.
+  // Their only purpose is to switch between two different TX circuits
+
+  #ifndef FLEX01_TX_CHB
+    return( -3 ); // there is only one channel configured!
+  #endif
+
+  if( ch == channel_config )
+    return( 0 );   // no change needed
+
+  // make sure Flex1 clock is enabled
+  if( (CCM_CCGR5 & 0xC) == 0 )
+    return( -1 ); // can not read status if Flex clock is disabled
+
+  // wait for transmitter to empty before changing
+  time = micros();
+  while(1) {
+    if( Flex1553TX_transmitter_busy() == 0 )
+      break;
+    if( (micros() - time) > 100 ) { // or timeout
+      return( -2 );  // timeout
+      break;
+    }
+  }
+
+  if( ch & FLEX1553_CH_A ) { // if Channel A is to be enabled
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO04     Teensy pin 2
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO05     Teensy pin 3
+  }
+  else {  // Channel A is to be disabled
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 5;     // GPIO4_IO04   Teensy pin 2
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 5;     // GPIO4_IO05   Teensy pin 3
+  }
+
+  if( ch & FLEX1553_CH_B ) { // if Channel B is to be enabled
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO06     Teensy pin 4
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO07     Teensy pin 33
+  }
+  else {  // Channel B is to be disabled
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 5;     // GPIO4_IO06   Teensy pin 4
+    IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 5;     // GPIO4_IO07   Teensy pin 33
+  }
+
+  channel_config = ch;
+  return( 0 );
+}
+
+
+// This is the latest working verion
+// still having trouble with the start flag happening just before a clock edge, wihch causes shiter and state mahcine to be out of sync
+// Configures FlexIO2 as a 1553 transmitter
+// @return  always returns zero
+int Flex2_1553TX_config(void)
+{
+  // pins used by this module
+  #define FLEX2_1553_PIN_TIM0_OUT  18    // for debug only
+  //#define FLEX2_1553_PIN_TIM1_OUT  19    // for debug only
+     // the following 3 pins must stay sequential, they are used as
+     // inputs to the state machine
+  #define FLEX2_1553_PIN_SHFT1_OUT 10    // 6
+  #define FLEX2_1553_PIN_SHFT2_OUT 11    // 9
+  #define FLEX2_1553_PIN_TIM2_OUT  12    // for debug only
+  #define FLEX2_1553_PIN_TIM3_OUT  19    // for debug only
+  #define FLEX2_1553_PIN_TIM7_OUT  28    // for debug only
+  #define FLEX2_1553_PIN_TIM5_OUT  29    // for debug only
+  // four more pins are used for the state machine output
+  // but they are pre-assigned to FlexIO[1:0] and configured
+  // in a different way
+
+  // setup flex clock
+  // the Flex clock MUST BE CONFIGURED FIRST. Accessing and Flex register without
+  // a clock, will hang the code.
+  // The default clock speed is 30MHz and I need 2MHz, so I would like to use
+  // my baud rate divider to divide by 15. Unfortanuatly, the way the baud
+  // dividers work, you need can only divide by an even number. So I need
+  // to change the flex clock speed.
+  CCM_CS1CDR &= ~( CCM_CS1CDR_FLEXIO2_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CS1CDR |= CCM_CS1CDR_FLEXIO2_CLK_PODF( 4 );   // set flex clock = 48MHz
+                                                    // clock speed = 480MHz/(N+1)
+  CCM_CCGR3 |= CCM_CCGR3_FLEXIO2(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO2 (clock MUST be enabled or this will hang)
+  FLEXIO2_CTRL |= 2;    // reset Flex module
+  FLEXIO2_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 2
+    // final output from state machine
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_00 = 4;      // FLEXIO pin0    Teensy pin 10
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_01 = 4;      // FLEXIO pin1    Teensy pin 12
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_02 = 4;    // FLEXIO pin2    Teensy pin 11
+    // inputs to state machine
+#ifdef FLEX02_DEBUG
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_10 = 4;      // FLEXIO pin10   Teensy pin 6
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_11 = 4;      // FLEXIO pin11   Teensy pin 9
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B0_12 = 4;      // FLEXIO pin12   Teensy pin 32
+    // 2MHz timer output
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B1_03 = 4;      // FLEXIO pin19   Teensy pin 37
+
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B1_02 = 4;      // FLEXIO pin18   Teensy pin 36
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B1_12 = 4;      // FLEXIO pin28   Teensy pin 35
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_B1_13 = 4;      // FLEXIO pin29   Teensy pin 34
+#endif
+
+  // State Machine **************************************************
+  // This uses five shifters as a five-state state machine to produce Manchester II
+  // biphase encoded data bits
+  //  state 0 = outputs disabled
+  //  state 4 = first  half of a "1" state
+  //  state 6 = second half of a "1" state
+  //  state 7 = first  half of a "0" state
+  //  state 5 = second half of a "0" state
+  // all 5 shifters are set the same, only the state tables are different
+
+  // setup state 0
+  FLEXIO2_SHIFTCTL0  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           //FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( 10 )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO2_SHIFTCFG0  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xf )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable  FXIO_D[1:0] outputs
+                                                   //    Teensy pins 12, 10
+ // setup state 4
+  FLEXIO2_SHIFTCTL4  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           //FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( 10 )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO2_SHIFTCFG4  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xf )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable  FXIO_D[1:0] outputs
+                                                   //    Teensy pins 12, 10
+
+ // setup state 5
+  FLEXIO2_SHIFTCTL5  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           //FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( 10 )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO2_SHIFTCFG5  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xf )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable  FXIO_D[1:0] outputs
+                                                   //    Teensy pins 12, 10
+
+ // setup state 6
+  FLEXIO2_SHIFTCTL6  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           //FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( 10 )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO2_SHIFTCFG6  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xf )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable  FXIO_D[1:0] outputs
+                                                   //    Teensy pins 12, 10
+
+ // setup state 7
+  FLEXIO2_SHIFTCTL7  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           //FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( 10 )   |        // FLEXIO pins 10, 11 & 12 as inputs
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO2_SHIFTCFG7  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xf )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable  FXIO_D[1:0] outputs
+                                                   //    Teensy pins 12, 10
+
+  // load state lookup table               output  : next state
+  FLEXIO2_SHIFTBUF0 =  0x009E7000U;  //  0000 0000 : 100 111 100 111 000 000 000 000b
+  FLEXIO2_SHIFTBUF4 =  0x01DADDADU;  //  0000 0001 : 110 110 101 101 110 110 101 101b
+  FLEXIO2_SHIFTBUF7 =  0x02B76B76U;  //  0000 0010 : 101 101 110 110 101 101 110 110b
+  FLEXIO2_SHIFTBUF5 =  0x019E7000U;  //  0000 0001 : 100 111 100 111 000 000 000 000b
+  FLEXIO2_SHIFTBUF6 =  0x029E7000U;  //  0000 0010 : 100 111 100 111 000 000 000 000b
+
+  // setup data shifter 1 **************************************************
+  // this is the data shifter. writing data to SHIFTBUF1 will trigger the transmit
+  // 21 bits are used. The first 3 (LSB) for the Sync, 16 bits of data, one parity,
+  // and the last bit (MSB) is used to turn off the transmitter
+  FLEXIO2_SHIFTCTL1  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 1
+           // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // pin output enabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX2_1553_PIN_SHFT1_OUT )   |        // FLEXIO pin 10    Teensy pin 6  (for debug only)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 2 );              // transmit mode
+
+  FLEXIO2_SHIFTCFG1  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // setup data shifter 2 **************************************************
+  // this shfiter is used for control bits, which will modify the data
+  // both shifters shift data out at the same time
+  // A zero in this shifter causes the same bit postion in the data shifter
+  // to be output without transition. A one will cause the data bit to
+  // transition: 0 = 0 to 1, 1 = 1 to 0
+  FLEXIO2_SHIFTCTL2  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // controlled from timer 1
+           // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // pin output enabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX2_1553_PIN_SHFT2_OUT )   |        // FLEXIO pin 11    Teensy pin 9  (for debug only)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 2 );              // transmit mode
+
+  FLEXIO2_SHIFTCFG2  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // the control bits are always the same. remember LSB first
+  // the shifter will reload the same data each time TIMER1 is triggered
+  FLEXIO2_SHIFTBUF2 =  0x0ffffaU;  //   1111 1111 1111 1111 1010b;
+  //FLEXIO2_SHIFTBUF2 =  0x0000000U;   // for debug: SM should output raw data from shifter 1
+
+  // setup flex timer 0 *****************************************************
+  // this is a 2MHz clock to step the state machine
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by Shifter 1 status flag
+  FLEXIO2_TIMCTL0    =
+           FLEXIO_TIMCTL_TRGSEL( 5 )      |        // not used
+           //FLEXIO_TIMCTL_TRGPOL           |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM0_OUT )     |        // timer pin 19 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL           |        // timer pin active low
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
+
+  FLEXIO2_TIMCFG0    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  //   divide clock by 24               (baudrate_divider/2-1))
+  //                                         (24/2-1)
+  //                                            (11)
+  FLEXIO2_TIMCMP0    =    11;
+
+
+  // setup flex timer 1 *****************************************************
+  // this is a counter to track the bit count for both shifters
+  // it is clocked from Timer3 (1MHz)
+  // it is enabled by Shifter 1 status flag
+  FLEXIO2_TIMCTL1    =
+           //FLEXIO_TIMCTL_TRGSEL( 5 )      |        // shifter 1 status flag =(1 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 58 )      |        // Pin 29 (Timer5 output)
+           FLEXIO_TIMCTL_TRGSEL( 23 )      |        // Timer5 out (N * 4) + 3
+           //FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 0 )      |        // timer pin output disabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM3_OUT )   |   // used as the clock input
+           FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+           //FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit counter mode
+
+  FLEXIO2_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 2 )      |        // decrement on pin input, shift clock = pin input
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 2 )      |        // enable timer on (inverted) trigger high
+           //FLEXIO_TIMCFG_TIMENA( 3 )      |        // enable timer on (inverted) trigger high & pin high
+           //FLEXIO_TIMCFG_TIMENA( 1 )      |        // Timer enabled on Timer N-1 enable
+                  // this is needed to prevent a timing synchronization fault that
+                  // occurs occasionally if the trigger occurs too close to the clock edge
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  We are shifting 20 bits of data
+  //  20 shifts,  divide clock by 1      ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (20*2-1)<<8  | (1/2-1)
+  //                                         (39)<<8  | (0)
+  //                                          0x2700  | 0x0
+  FLEXIO2_TIMCMP1    =    0x2700;
+  //FLEXIO2_TIMCMP1    =    0x27;
+
+  // setup flex timer 2 *****************************************************
+  // This produced the Enable input to the state machine which
+  // will disable the output at the end of the transmission.
+  // This timer produces a .525us delay, which is reset after
+  // each edge of Timer1 output (500us edges). Thus, the timer
+  // output will stay high until .525us after Timer1 stops.
+  // clocked from flex clock
+  // enabled by Timer1 enable
+  // reset by Timer 1 output
+  // disabled by compare (timeout)
+  FLEXIO2_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 7 )      |        // triggered by Timer 1 trigger output =(1 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 5 )      |        // shifter 1 status flag =(1 * 4) + 1
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM2_OUT )     |        // timer pin 12 (wired to state machine)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer
+
+  FLEXIO2_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // Decrement on Flex clock
+           FLEXIO_TIMCFG_TIMRST( 7 )      |        // reset on trigger, both edges
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // Timer disabled on timer compare
+           FLEXIO_TIMCFG_TIMENA( 1 )      |        // Timer enabled on Timer N-1 enable
+           //FLEXIO_TIMCFG_TIMENA( 3 )      |        // enable timer on (inverted) trigger high & pin high
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+           // divide Flex clock by 48 to get 0.50us
+           //                         (baudrate_divider/2-1))
+           //                         (48/2-1)
+           //                         (23)
+           // time = (25 + 1)/48  = .542us
+  FLEXIO2_TIMCMP2    =    25;
+
+
+  // setup flex timer 3 *****************************************************
+  // 1MHz clock for the shifters
+  // This is free running and is always running
+  // it is clocked from from the Flex clock
+  // and is synchronized to Timer0 on the rising edge, simply because
+  // both clocks are started at the same time (at the end of config)
+  FLEXIO2_TIMCTL3    =
+           FLEXIO_TIMCTL_TRGSEL( 3 )      |        // Triggered by Timer0 =(0 * 4) + 3
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM3_OUT )     |        // timer pin 19 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
+
+  FLEXIO2_TIMCFG3    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+          // FLEXIO_TIMCFG_TIMDEC( 1 )      |        // decrement on Trigger, both edges
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on flex clock
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  //   divide clock by 48               (baudrate_divider/2-1))
+  //                                         (48/2-1)
+  //                                            (23)
+  FLEXIO2_TIMCMP3    =    23;
+
+
+  // setup flex timer 4 *****************************************************
+  // this is a hack to try to sync the shifter flag to the clocks
+   FLEXIO2_TIMCTL4    =
+           FLEXIO_TIMCTL_TRGSEL( 5 )      |        // shifter 1 status flag =(1 * 4) + 1
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 0 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM3_OUT )     |        // timer pin 19 (for debug only)
+           FLEXIO_TIMCTL_PINPOL           |        // timer pin active low
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
+
+  FLEXIO2_TIMCFG4    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 2 )      |        // decrement on pin input, shift clock = pin input
+           //FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 6 )      |        // disable timer on timer compare
+           //FLEXIO_TIMCFG_TIMENA( 3 )      |        // enable timer on (inverted) trigger high & pin high
+           FLEXIO_TIMCFG_TIMENA( 5 )      |        // enable timer on trigger rising edge
+           FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //   divide clock by 24               (baudrate_divider/2-1))
+  //                                         (24/2-1)
+  //                                            (11)
+  FLEXIO2_TIMCMP4    =   0x1;
+
+
+  // setup flex timer 5 *****************************************************
+  // this is a hack to try to sync the shifter flag to the clocks
+   FLEXIO2_TIMCTL5    =
+           //FLEXIO_TIMCTL_TRGSEL( 36 )     |        // Pin 18 (2MHz clock) =(pin * 2)
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // not used
+           FLEXIO_TIMCTL_TRGPOL           |        // trigger active low
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM5_OUT )     |        // timer pin 19 (for debug only)
+           FLEXIO_TIMCTL_PINPOL           |        // timer pin active low
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit mode
+
+  FLEXIO2_TIMCFG5    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 1 )      |        // decrement on pin input, shift clock = pin input
+           //FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 1 )      |        // disable timer on timer N-1 disable
+           //FLEXIO_TIMCFG_TIMENA( 3 )      |        // enable timer on (inverted) trigger high & pin high
+           FLEXIO_TIMCFG_TIMENA( 1 )      |        // enable timer on timer N-1 enable
+           FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //   divide clock by 24               (baudrate_divider/2-1))
+  //                                         (24/2-1)
+  //                                            (11)
+  FLEXIO2_TIMCMP5    =   0xffff;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO2_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 5 )     |        // Shifter1 status flag =(1 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX2_1553_PIN_TIM7_OUT )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO2_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // enable FLEXIO2
+  FLEXIO2_CTRL |= 1;    // enable FLEXIO2 module
+  just_configured2 = true;
+
+  return( 0 );
+}
+
+
+
+// Send one word on bus, using FlexIO2
+// @param  sync:   0=data sync, 1=command or status sync
+// @param  data:   16-bit data
+// @return error code: 0=success, -1=Flex clock disabled, -2=timeout
+int Flex2_1553TX_send( uint8_t sync, uint16_t data )
+{
+  uint32_t shiftData;
+  uint32_t time;
+  int status = 0;
+
+  // make sure Flex clock is enabled
+  if( (CCM_CCGR3 & 3) == 0 )
+    return( -1 );  // can not read status if Flex clock is disabled
+
+  // write output data to shifter
+  // the first three bits form a SYNC pulse, which behave differently than the data bits
+  // the sequencer will treat these bit positions special, do not use any other codes here
+  if( sync == FLEX1553_COMMAND_WORD )
+    shiftData =  0xC0000000U; // 110b
+  else
+    shiftData =  0x20000000U; // 001b
+
+  // shifter sends LSB first, order the bits accordingly
+  shiftData = shiftData | ((uint32_t)data << 13) | ((uint32_t)parity(data) << 12);
+
+  // wait for transmitter avaliable
+  time = micros();
+  while(1) {
+    if( Flex2_1553TX_transmitter_busy() == 0 )
+      break;
+    if( (micros() - time) > 100 ) { // or timeout
+      status = -2;  // timeout
+      break;
+    }
+  }
+
+  //  If all is well, send the data
+  if( status == 0 ) {
+    //FLEXIO2_SHIFTBUF1 = shiftData;  // start transimision
+    FLEXIO2_SHIFTBUFBIS1 = shiftData;  // start transimision
+    FLEXIO2_TIMSTAT   = 7;          // reset timer status, these are used to determine when
+                                    // transmission is complete
+    just_configured2 = false;
+  }
+
+  return( status );
+}
+
+
+
+int Flex2_1553TX_transmitter_busy( void )
+{
+  int flags;
+  int status;
+
+  // the usual "tranmitter empty" flag does not seem to work with FlexIO
+  // writing the second word before the transmitter is done will cause it
+  // to stop working. The code does not hang, but the Flex module will
+  // no longer trigger, until it has been reset.
+  // There seem to be two valid flag states with this specific setup
+  // where flags = (FLEXIO2_TIMSTAT << 8) | FLEXIO2_SHIFTSTAT
+  //    each bit is a flag for one timer or shifter
+  // 0x0003 = immediatly after configuration, shifters 0 and 1 will show empty
+  //          shifter 2 was loaded by the configuration, so it shows full
+  //          timers have not been triggered, so their status is 0
+  //          BUT, this condition can also occur on subsiquent transmissions
+  //          durring the shift, tricking the code into thinking it is done.
+  // 0x0707 = after data has been sent and transmission is complete
+  //          shifters 0, 1 and 2 all show empty
+  //          timers 0, 1, and 2 show a timeout
+  //          BUT, the processor is so crazy fast, it can check this status again
+  //          and load a second word into the transmitter, before the HARDWARE
+  //          has time to clear the status flags! So the timer flags must be
+  //          cleared by software after writing the FLEXIO2_SHIFTBUF1 reg
+  // Any other status indicates that the FlexIO transmit is not done
+
+  // make sure Flex clock is enabled
+  if( (CCM_CCGR3 & 3) == 0 )
+    return( -1 ); // can not read status if Flex clock is disabled
+
+  flags = (FLEXIO2_TIMSTAT << 8) | FLEXIO2_SHIFTSTAT; // will hang if Flex clock not enabled
+  //if( flags == 0x0707 ) // normal flags
+  if( flags & 2 ) // data shifter empty
+    status = 0;
+  else if( (flags == 3) && just_configured2 ) // only used by the first write
+    status = 0;
+  else
+    status = 1;  // not ready
+
+  return( status );
+}
+
+
+// get status flags for 8 timers and 8 shifters in FlexIO2
+// @return  8 timer flags : 8 shifter flags (one byte for each)
+int Flex2_1553TX_get_status( void )
+{
+  int flags;
+
+  // make sure Flex clock is enabled
+  if( (CCM_CCGR3 & 3) == 0 )
+    return( -1 ); // can not read status if Flex clock is disabled
+
+  flags = (FLEXIO2_TIMSTAT << 8) | FLEXIO2_SHIFTSTAT; // will hang if Flex clock not enabled
+  return( flags );
+}
+
+
+
+uint8_t parity( uint32_t data )
+{
+  uint32_t parity = 0;
+
+  while(data > 0) {         // if it is 0 there are no more 1's to count
+    if(data & 0x01) {       // see if LSB is 1
+      parity++;             // why yes it is
+    }
+    data = data >> 1; //shift to next bit
+  }
+
+  return (~parity & 0x0001U);  // only need the low bit to determine odd / even
+}
+
+
+
+// configure 1553 receiver on FlexIO 3
+int Flex3_1553RX_config(void)
+{
+  // setup flex clock
+  // note: FlexIO2 and FlexIO3 share the same clock
+  CCM_CS1CDR &= ~( CCM_CS1CDR_FLEXIO2_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CS1CDR |= CCM_CS1CDR_FLEXIO2_CLK_PODF( 4 );   // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/(N+1)
+  CCM_CCGR3 |= CCM_CCGR3_FLEXIO2(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO3 (clock MUST be enabled or this will hang)
+  FLEXIO3_CTRL |= 2;    // reset Flex module
+  FLEXIO3_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // pins used by this module
+  #define FLEX3_1553_PIN_TIM0_OUT  10    // 2 MHz state machine clock
+  #define FLEX3_1553_PIN_TIM1_OUT   5    // 1 MHz shift clock
+  #define FLEX3_1553_PIN_TIM2_OUT   8    // 5 MHz clock
+  #define FLEX3_1553_PIN_TIM7_OUT   9    // for debug only
+  #define FLEX3_1553_PIN_SHFT1_IN   0    // data bits from state machine
+  #define FLEX3_1553_PIN_SHFT2_IN   1    // fault bits from state machine
+ // #define FLEX3_1553_PIN_SHFT3_IN   4    // 1553 data in
+  #define FLEX3_1553_PIN_DATA_IN    4    // data input pin
+
+  // route IO pins to FlexIO 3
+    // 1553 input bit stream
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_04 = 9;      // FLEXIO pin4    Teensy pin 40
+#ifdef FLEX03_DEBUG  // bring out internal signals
+    // Timer 0,1,2 outputs  - for debug only
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_10 = 9;      // FLEXIO pin10   Teensy pin 20
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_05 = 9;      // FLEXIO pin5    Teensy pin 41
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_08 = 9;      // FLEXIO pin8    Teensy pin 22
+    // Compare output      - for debug only
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_09 = 9;      // FLEXIO pin9    Teensy pin 23
+    // State machine out / shifter in - for debug only
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_00 = 9;      // FLEXIO pin0    Teensy pin 19
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_01 = 9;      // FLEXIO pin1    Teensy pin 18
+#endif
+
+  // setup flex timer 0 *****************************************************
+  // this is a 2MHz clock to step the state machine
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by Shifter 3 status flag (TBD)
+  FLEXIO3_TIMCTL0    =
+           //FLEXIO_TIMCTL_TRGSEL( 13 )      |       // triggered by Shifter3 compare (N*4) +1
+           FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX3_1553_PIN_TIM0_OUT )     |        // timer pin 10 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO3_TIMCFG0    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )       ;       // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  40 clocks,  divide clock by 24     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (40*2-1)<<8  | (24/2-1)
+  //                                         (79)<<8  | (11)
+  //                                          0x4F00  | 0x0b
+  FLEXIO3_TIMCMP0    =    0x4F0b;
+
+
+  // setup flex timer 1 *****************************************************
+  // this is a 1MHz clock to step both shifters
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by TBD
+  FLEXIO3_TIMCTL1    =
+           //FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Try Shifter3 status flag =(3 * 4) + 1
+           FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0)
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX3_1553_PIN_TIM1_OUT )     |        // timer pin 11 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO3_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  // 20 shifts are needed to clock in the data, and one more shift is needed
+  // to STORE the data into the Shift Buffer. If only 20 clocks are provided,
+  // the last bit (parity) will not be captured.
+  // It seems that just a half clock is needed to store the data. This extra
+  // half clock is not visible in the timer output line, but does capture all
+  // 20 bits.
+  //
+  // 20-1/2 shifts,  divide clock by 48  ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                   (20.5*2-1)<<8  | (48/2-1)
+  //                                         (40)<<8  | (23)
+  //                                          0x2800  | 0x17
+  FLEXIO3_TIMCMP1  =  0x2817;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 6MHz clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO3_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX3_1553_PIN_TIM2_OUT )      |        // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           //FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO3_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 48MHz, we want 6MHz, so divide by 8
+  //  TIMCMP = divider/2-1 = 8/2-1 = 3
+  //FLEXIO3_TIMCMP2    =    0xffff0003U;
+  FLEXIO3_TIMCMP2    =    0x0003U;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO3_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( FLEX3_1553_PIN_TIM7_OUT )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO3_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // setup data shifter 1 **************************************************
+  // This shifter is configured in receive Mode
+  // It captures the data bits from the state machine decoder
+  FLEXIO3_SHIFTCTL1  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // clocked from timer 1
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on falling edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_SHFT1_IN )    |        // FLEXIO pin 0
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 1 );              // receive mode
+
+  FLEXIO3_SHIFTCFG1  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+
+  // setup data shifter 2 **************************************************
+  // This shifter is configured in receive Mode
+  // It captures the fault bits from the state machine decoder
+  FLEXIO3_SHIFTCTL2  =
+           FLEXIO_SHIFTCTL_TIMSEL( 1 )    |        // clocked from timer 1
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on falling edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_SHFT2_IN )    |        // FLEXIO pin 1
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 1 );              // receive mode
+
+  FLEXIO3_SHIFTCFG2  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO3_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 2 )    |        // clocked from timer 2
+           // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_DATA_IN )    |        // FLEXIO pin 4    Teensy pin 40  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO3_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // The trigger pattern is 1.5 ms of zeros, followed by 1.5 ms of 1's
+  // for a total 3 ms pattern @6MHz = 18 bits.
+  // We are using 6MHz because this is the fastest that we can sample
+  // and still have the pattern fit (almost) in 16 bits. And because
+  // 1.5us is a whole number of clocks: 1/6MHz * 9 = 1.5us. This will
+  // produce an accurate trigger point.
+  // Remove 1 bit to make it even, and to make sure we dont capture
+  // anything outside the trigger pattern.
+  // pattern = 0000 0001 1111 1111   mask = 0000 0000 0000 0001
+  //         = 0x01ff                     = 0x0001
+  FLEXIO3_SHIFTBUF3 =  0x01ff0001U;
+  //FLEXIO3_SHIFTBUF3 =  0xffff000fU;
+  //FLEXIO3_SHIFTBUF3 =  0x000fffffU;
+  //FLEXIO3_SHIFTBUF3 =  0x01fffff0U;
+
+
+
+  // State Machine **************************************************
+  // This uses five shifters as a five-state state machine to decode the
+  // Manchester encoded data
+  //  state 0 = fault - no transiton during bit time
+  //  state 5 = first  half bit time, with input = 1
+  //  state 7 = second half bit time, with input transitioning to 0
+  //  state 6 = first  half bit time, with input = 0
+  //  state 4 = second half bit time, with input transitioning to 1
+  // all 5 shifters are set the same, only the state tables are different
+
+  // setup state 0
+  FLEXIO3_SHIFTCTL0  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_DATA_IN )   |   // 2 input bit used
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO3_SHIFTCFG0  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xF )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 19, 18
+ // setup state 4
+  FLEXIO3_SHIFTCTL4  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_DATA_IN )   |   // only 1 input bit used              // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO3_SHIFTCFG4  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xF )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+
+ // setup state 5
+  FLEXIO3_SHIFTCTL5  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_DATA_IN )   |   // only 1 input bit used              // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO3_SHIFTCFG5  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xF )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+
+ // setup state 6
+  FLEXIO3_SHIFTCTL6  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_DATA_IN )   |   // only 1 input bit used              // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO3_SHIFTCFG6  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xF )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+
+ // setup state 7
+  FLEXIO3_SHIFTCTL7  =
+           FLEXIO_SHIFTCTL_TIMSEL( 0 )    |        // controlled from timer 0
+           FLEXIO_SHIFTCTL_TIMPOL         |        // on negative edge
+           FLEXIO_SHIFTCTL_PINCFG( 3 )    |        // enable output
+           FLEXIO_SHIFTCTL_PINSEL( FLEX3_1553_PIN_DATA_IN )   |   // only 1 input bit used              // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 6 );              // state mode
+
+  FLEXIO3_SHIFTCFG7  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0xF )  |        // disable FXIO_D[7:4] outputs
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP(  3 )    |        // disable FXIO_D[3:2] outputs
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // enable FXIO_D[1:0] outputs
+                                                   //    Teensy pins 2, 3, 4, 33
+  // Two output bits from the state machine, FXIO_D[1:0], represent data bits
+  // (on flex bit 0) and faults (no transition, on flex bit 1). These two bits
+  //  will be captured by shifters.
+
+  // load state lookup table               output  : next state
+  FLEXIO3_SHIFTBUF0 =  0x0202E02EU;  //  0000 0010 : 000 000 101 110 000 000 101 110b
+  FLEXIO3_SHIFTBUF5 =  0x001C01C0U;  //  0000 0000 : 000 111 000 000 000 111 000 000b
+  FLEXIO3_SHIFTBUF7 =  0x0102E02EU;  //  0000 0001 : 000 000 101 110 000 000 101 110b
+  FLEXIO3_SHIFTBUF6 =  0x00800800U;  //  0000 0000 : 100 000 000 000 100 000 000 000b
+  FLEXIO3_SHIFTBUF4 =  0x0002E02EU;  //  0000 0000 : 000 000 101 110 000 000 101 110b
+
+
+
+  // enable FLEXIO3
+  FLEXIO3_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+
+// get status flags for 8 timers and 8 shifters in FlexIO3
+// @return  8 timer flags : 8 shifter flags (one byte for each)
+unsigned long Flex3_1553RX_get_status( void )
+{
+  unsigned long flags;
+
+  // make sure Flex clock is enabled
+  if( (CCM_CCGR3 & 3) == 0 )
+    return( -1 ); // can not read status if Flex clock is disabled
+
+  flags = (FLEXIO3_SHIFTERR << 16) | (FLEXIO3_SHIFTSTAT << 8) | FLEXIO3_TIMSTAT;
+  FLEXIO3_SHIFTERR  = 0xff;  // clear flags
+  FLEXIO3_SHIFTSTAT = 0xff;
+  FLEXIO3_TIMSTAT   = 0xff;
+  return( flags );
+}
+
+
+
+unsigned long Flex3_1553RX_read_data( void )
+{
+  // make sure Flex clock is enabled
+  if( (CCM_CCGR3 & 3) == 0 )
+    return( -1 ); // can not read status if Flex clock is disabled
+
+  return( FLEXIO3_SHIFTBUFBIS1 );
+}
+
+
+
+unsigned long Flex3_1553RX_read_faults( void )
+{
+  // make sure Flex clock is enabled
+  if( (CCM_CCGR3 & 3) == 0 )
+    return( -1 ); // can not read status if Flex clock is disabled
+
+  return( FLEXIO3_SHIFTBUFBIS2 );
+}
+
+
+
+
+// set trigger pattern for RX data capture. For debug only
+int Flex1553RX_trigger( unsigned int trigger, unsigned int pattern )
+{
+   // the lower 16 bits are the mask bits, which for now are all zero
+   FLEXIO3_SHIFTBUF3 = ((unsigned long)trigger << 16) | (unsigned long)pattern;
+   return( 0 );
+}
+
+
+
+// get the PARAM register for the specified FLEXIO module
+// @param   flex: FlexIO module number (1-3)
+// @return  TRIGGERs : PINs : TIMERs : SHIFTERs (one byte for each)
+unsigned long Flex1553_get_params( int flex )
+{
+  switch( flex )
+  {
+    // the PARAM register contains the number of FLEXIO resources avilable in
+    // the specified module. Resouces are arranged as 4 bytes
+    // TRIGGERs : PINs : TIMERs : SHIFTERs
+    // TRIGGER refers to the number of EXTERNAL triggers, have not found any
+    // documentation on this yet
+    case 1:
+      if( (CCM_CCGR5 & 0xC) != 0 )  // make sure Flex clock is enabled
+        return(FLEXIO1_PARAM);
+      break;
+    case 2:
+      if( (CCM_CCGR3 & 3) != 0 )  // make sure Flex clock is enabled
+        return(FLEXIO2_PARAM);
+      break;
+    case 3:
+      if( (CCM_CCGR3 & 3) != 0 )  // note: FlexIO 2 and 3 share the same clock
+        return(FLEXIO3_PARAM);
+      break;
+  }
+
+  return( 0 );
+}
+
+
+// get the PIN register for the specified FLEXIO module (for debug)
+// @param   flex: FlexIO module number (1-3)
+// @return  current state of all FlexIO_Dxx pins
+unsigned long Flex1553_get_pins( int flex )
+{
+  switch( flex )
+  {
+    // the PIN register returns the current state of all the FlexIO pins
+    // within a FlexIO module
+    case 1:
+      if( (CCM_CCGR5 & 0xC) != 0 )  // make sure Flex clock is enabled
+        return(FLEXIO1_PIN);
+      break;
+    case 2:
+      if( (CCM_CCGR3 & 3) != 0 )  // make sure Flex clock is enabled
+        return(FLEXIO2_PIN);
+      break;
+    case 3:
+      if( (CCM_CCGR3 & 3) != 0 )  // note: FlexIO 2 and 3 share the same clock
+        return(FLEXIO3_PIN);
+      break;
+  }
+
+  return( 0 );
+}
+
+
+// ********************************************************
+// This is for testing the "Match Continuous Mode"
+// Use a square <40kHz wave as input
+int Flex1_1553Sync_config1(void)
+{
+  // setup flex clock
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_OFF);      // disable clock
+  CCM_CDCDR &= ~( CCM_CDCDR_FLEXIO1_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CDCDR |= CCM_CDCDR_FLEXIO1_CLK_PODF( 5 );     // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/2/(N+1)
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO3 (clock MUST be enabled or this will hang)
+  FLEXIO1_CTRL |= 2;    // reset Flex module
+  FLEXIO1_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 1
+    // 1553 input bit stream
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_04 = 9;      // FLEXIO pin4    Teensy pin 40
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO pin4    Teensy pin 2
+    // Timer 0,1,2 outputs
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_11 = 9;      // FLEXIO pin11   Teensy pin 21
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO pin6    Teensy pin 4
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO pin6    Teensy pin 3
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_08 = 9;      // FLEXIO pin8    Teensy pin 22
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_08 = 4;     // FLEXIO pin8    Teensy pin 5
+    // Compare output
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_09 = 9;      // FLEXIO pin9    Teensy pin 23
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO pin7    Teensy pin 33
+    // State machine out / shifter in
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_12 = 9;      // FLEXIO pin12   Teensy pin 38
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 9;      // FLEXIO pin13   Teensy pin 39
+
+
+  // setup flex timer 1 *****************************************************
+  // this is a 1MHz clock to step both shifters
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by TBD
+  FLEXIO1_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Try Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 6 )     |        // timer pin 6 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  TBD
+  //  22 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (22*2-1)<<8  | (40/2-1)
+  //                                         (43)<<8  | (19)
+  //                                          0x2b00  | 0x13
+  FLEXIO1_TIMCMP1    =    0x2b13;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 5MHz clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO1_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 8 )      |        // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 40MHz, we want 5MHz, so divide by 8
+  //  TIMCMP = divider/2-1 = 8/2-1 = 3
+  //FLEXIO1_TIMCMP2    =    0x00020003U;
+  FLEXIO1_TIMCMP2    =    0x0003U;
+
+
+  // setup flex timer 3 *****************************************************
+  // this is a strange configuration as an experiment
+  // it is clocked from from Timer2
+  // it is also enabled from Timer2 clock
+  FLEXIO1_TIMCTL3    =
+           FLEXIO_TIMCTL_TRGSEL( 11 )      |       // trigger on Timer2 out (2 * 4)+3
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 5 )      |        // timer pin 5 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG3    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trig, shift clock = Trig
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // timer disabled on timeout
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // timer enabled on Trig rising edge
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  FLEXIO1_TIMCMP3    =    48;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO1_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 7 )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO1_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 3 )    |        // clocked from timer 3
+           FLEXIO_SHIFTCTL_TIMPOL      |        // shift on neg edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 2  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           //FLEXIO_SHIFTCTL_SMOD( 4 );              // match and store mode
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO1_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // The trigger pattern is 1.5 ms of zeros, followed by 1.5 ms of 1's
+  // for a total 3 ms pattern @5MHz = 15 bits.
+  // We are using 5MHz because this is the fastest that we can sample
+  // and still have the pattern fit in 16 bits.
+  // Remove 1 bit to make it even, and to make sure we dont capture
+  // anything outside the trigger pattern.
+  // pattern = 0000 0001 1111 11xx   mask = 0000 0000 0000 0011
+  //         = 0x01ff                     = 0x0003
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0003U;
+  FLEXIO1_SHIFTBUF3 =  0x00ff0000U;
+  //FLEXIO1_SHIFTBUF3 =  0xff000000U;
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0000U;
+  //FLEXIO1_SHIFTBUF3 =  0x00000000U;
+
+
+  // setup data shifter 4 **************************************************
+  //Not used
+  // This is an experiment to see if it can fix Match Continuous Mode
+  // Shifter3 will get its input from here, instead of dirctly from the pin
+  FLEXIO1_SHIFTCTL4  =
+           FLEXIO_SHIFTCTL_TIMSEL( 2 )    |        // clocked from timer 2
+           //FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 40  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 1 );              // receive mode
+
+  FLEXIO1_SHIFTCFG4  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+
+  // enable FLEXIO3
+  FLEXIO1_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+
+// ********************************************************
+// This is for testing the "Match Continuous Mode"
+// Use a square <40kHz wave as input
+// this is pretty much the same as config1, except that Timer3 never disables
+int Flex1_1553Sync_config2(void)
+{
+  // setup flex clock
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_OFF);      // disable clock
+  CCM_CDCDR &= ~( CCM_CDCDR_FLEXIO1_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CDCDR |= CCM_CDCDR_FLEXIO1_CLK_PODF( 5 );     // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/2/(N+1)
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO3 (clock MUST be enabled or this will hang)
+  FLEXIO1_CTRL |= 2;    // reset Flex module
+  FLEXIO1_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 1
+    // 1553 input bit stream
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_04 = 9;      // FLEXIO pin4    Teensy pin 40
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO pin4    Teensy pin 2
+    // Timer 0,1,2 outputs
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_11 = 9;      // FLEXIO pin11   Teensy pin 21
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO pin6    Teensy pin 4
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO pin6    Teensy pin 3
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_08 = 9;      // FLEXIO pin8    Teensy pin 22
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_08 = 4;     // FLEXIO pin8    Teensy pin 5
+    // Compare output
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_09 = 9;      // FLEXIO pin9    Teensy pin 23
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO pin7    Teensy pin 33
+    // State machine out / shifter in
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_12 = 9;      // FLEXIO pin12   Teensy pin 38
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 9;      // FLEXIO pin13   Teensy pin 39
+
+
+  // setup flex timer 1 *****************************************************
+  // this is here so that we can see something happen if we get a trigger from Shifter3
+  // produces a 1MHz clock
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by an output from Shifter3 status flag
+  FLEXIO1_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Try Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 6 )     |        // timer pin 6 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  TBD
+  //  22 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (22*2-1)<<8  | (40/2-1)
+  //                                         (43)<<8  | (19)
+  //                                          0x2b00  | 0x13
+  FLEXIO1_TIMCMP1    =    0x2b13;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 5MHz clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO1_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 8 )      |        // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 40MHz, we want 5MHz, so divide by 8
+  //  TIMCMP = divider/2-1 = 8/2-1 = 3
+  //FLEXIO1_TIMCMP2    =    0x00020003U;
+  FLEXIO1_TIMCMP2    =    0x0003U;
+
+
+  // setup flex timer 3 *****************************************************
+  // this is a strange configuration as an experiment
+  // it is clocked from from Timer2
+  // it is also enabled from Timer2 clock
+  FLEXIO1_TIMCTL3    =
+           FLEXIO_TIMCTL_TRGSEL( 11 )      |       // trigger on Timer2 out (2 * 4)+3
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 5 )      |        // timer pin 5 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG3    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trig, shift clock = Trig
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // timer never disables
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // timer enabled on Trig rising edge
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  FLEXIO1_TIMCMP3    =   10000;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO1_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 7 )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO1_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 3 )    |        // clocked from timer 3
+           FLEXIO_SHIFTCTL_TIMPOL      |        // shift on neg edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 2  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           //FLEXIO_SHIFTCTL_SMOD( 4 );              // match and store mode
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO1_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // The trigger pattern is 1.5 ms of zeros, followed by 1.5 ms of 1's
+  // for a total 3 ms pattern @5MHz = 15 bits.
+  // We are using 5MHz because this is the fastest that we can sample
+  // and still have the pattern fit in 16 bits.
+  // Remove 1 bit to make it even, and to make sure we dont capture
+  // anything outside the trigger pattern.
+  // pattern = 0000 0001 1111 11xx   mask = 0000 0000 0000 0011
+  //         = 0x01ff                     = 0x0003
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0003U;
+  //FLEXIO1_SHIFTBUF3 =  0xffff000fU;
+  FLEXIO1_SHIFTBUF3 =  0xff000000U;
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0000U;
+  //FLEXIO1_SHIFTBUF3 =  0x00000000U;
+
+
+  // setup data shifter 4 **************************************************
+  //Not used
+  // This is an experiment to see if it can fix Match Continuous Mode
+  // Shifter3 will get its input from here, instead of dirctly from the pin
+  FLEXIO1_SHIFTCTL4  =
+           FLEXIO_SHIFTCTL_TIMSEL( 2 )    |        // clocked from timer 2
+           //FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 40  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 1 );              // receive mode
+
+  FLEXIO1_SHIFTCFG4  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+
+  // enable FLEXIO3
+  FLEXIO1_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+
+// ********************************************************
+// This is for testing the "Match Continuous Mode"
+// Use a square <40kHz wave as input
+// this is pretty much the same as config2, except that Timer2 & 3 are combined into a dual 8-bit timer
+int Flex1_1553Sync_config3(void)
+{
+  // setup flex clock
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_OFF);      // disable clock
+  CCM_CDCDR &= ~( CCM_CDCDR_FLEXIO1_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CDCDR |= CCM_CDCDR_FLEXIO1_CLK_PODF( 5 );     // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/2/(N+1)
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO3 (clock MUST be enabled or this will hang)
+  FLEXIO1_CTRL |= 2;    // reset Flex module
+  FLEXIO1_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 1
+    // input bit stream
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO pin4    Teensy pin 2
+    // Timer 0,1,2 outputs
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO pin5    Teensy pin 3
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // Timer1  FLEXIO pin6    Teensy pin 4
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // Timer7  FLEXIO pin7    Teensy pin 33
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_08 = 4;     // Timer2  FLEXIO pin8    Teensy pin 5
+
+
+  // setup flex timer 1 *****************************************************
+  // this is here so that we can see something happen if we get a trigger from Shifter3
+  // produces a 1MHz clock
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by an output from Shifter3 status flag
+  FLEXIO1_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Try Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 6 )     |        // timer pin 6 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  TBD
+  //  22 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (22*2-1)<<8  | (40/2-1)
+  //                                         (43)<<8  | (19)
+  //                                          0x2b00  | 0x13
+  FLEXIO1_TIMCMP1    =    0x2b13;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 5MHz clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO1_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 8 )      |        // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // 8-bit counter/baud mode
+
+  FLEXIO1_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 40MHz, we want 5MHz, so divide by 8
+  //  50 shifts,  divide clock by 8      ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (50*2-1)<<8  | (8/2-1)
+  //                                         (99)<<8  | (3)
+  //                                          0x6300  | 0x03
+  FLEXIO1_TIMCMP2    =    0x6303U;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO1_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 7 )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO1_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 2 )    |        // clocked from timer 2
+           FLEXIO_SHIFTCTL_TIMPOL      |        // shift on neg edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 2  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           //FLEXIO_SHIFTCTL_SMOD( 4 );              // match and store mode
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO1_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // The trigger pattern is 1.5 ms of zeros, followed by 1.5 ms of 1's
+  // for a total 3 ms pattern @5MHz = 15 bits.
+  // We are using 5MHz because this is the fastest that we can sample
+  // and still have the pattern fit in 16 bits.
+  // Remove 1 bit to make it even, and to make sure we dont capture
+  // anything outside the trigger pattern.
+  // pattern = 0000 0001 1111 11xx   mask = 0000 0000 0000 0011
+  //         = 0x01ff                     = 0x0003
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0003U;
+  //FLEXIO1_SHIFTBUF3 =  0xffff000fU;
+  FLEXIO1_SHIFTBUF3 =  0xff000000U;
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0000U;
+  //FLEXIO1_SHIFTBUF3 =  0x00000000U;
+
+
+  // enable FLEXIO3
+  FLEXIO1_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+
+// ********************************************************
+// This is for testing the "Match Continuous Mode"
+// Use a square <40kHz wave as input
+// this adds another timer (Timer3) to config3, to reset Timer2 before it can timeout
+// hopefully this solves the most serious bug
+//   This does not work because in 8-bit mode, reset only resets the Baud count,
+//   not the shift count, which is the one we care about.
+int Flex1_1553Sync_config4(void)
+{
+  // setup flex clock
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_OFF);      // disable clock
+  CCM_CDCDR &= ~( CCM_CDCDR_FLEXIO1_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CDCDR |= CCM_CDCDR_FLEXIO1_CLK_PODF( 5 );     // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/2/(N+1)
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO3 (clock MUST be enabled or this will hang)
+  FLEXIO1_CTRL |= 2;    // reset Flex module
+  FLEXIO1_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 1
+    // 1553 input bit stream
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_04 = 9;      // FLEXIO pin4    Teensy pin 40
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO pin4    Teensy pin 2
+    // Timer 0,1,2 outputs
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_11 = 9;      // FLEXIO pin11   Teensy pin 21
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO pin6    Teensy pin 4
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO pin6    Teensy pin 3
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_08 = 9;      // FLEXIO pin8    Teensy pin 22
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_08 = 4;     // FLEXIO pin8    Teensy pin 5
+    // Compare output
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_09 = 9;      // FLEXIO pin9    Teensy pin 23
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO pin7    Teensy pin 33
+    // State machine out / shifter in
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_12 = 9;      // FLEXIO pin12   Teensy pin 38
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 9;      // FLEXIO pin13   Teensy pin 39
+
+
+  // setup flex timer 1 *****************************************************
+  // this is here so that we can see something happen if we get a trigger from Shifter3
+  // produces a 1MHz clock
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by an output from Shifter3 status flag
+  FLEXIO1_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |       //  Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 6 )     |        // timer pin 6 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  TBD
+  //  22 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (22*2-1)<<8  | (40/2-1)
+  //                                         (43)<<8  | (19)
+  //                                          0x2b00  | 0x13
+  FLEXIO1_TIMCMP1    =    0x2b13;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 5MHz clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO1_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 10 )     |        // Timer3 out =(3 * 4) + 3
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 8 )      |        // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // 8-bit counter/baud mode
+
+  FLEXIO1_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 7 )      |        // reset count on trigger, both edges edge
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 40MHz, we want 5MHz, so divide by 8
+  //  51 shifts,  divide clock by 8      ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (51*2-1)<<8  | (8/2-1)
+  //                                        (101)<<8  | (3)
+  //                                          0x6500  | 0x03
+  FLEXIO1_TIMCMP2    =    0x6503U;
+
+
+  // setup flex timer 3 *****************************************************
+  // this is an an extra timer that produces a reset to Timer2
+  // it is clocked from from FlexIO
+  // it is always enabled
+  FLEXIO1_TIMCTL3    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 5 )      |        // timer pin 5 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit counter mode
+
+  FLEXIO1_TIMCFG3    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+
+  //  50 shifts * 8 flex clocks             (n-1)
+  //                                      (400-1)
+  //                                        (399)
+  //                                       0x018F
+  FLEXIO1_TIMCMP3    =  0x18F;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO1_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 7 )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO1_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 2 )    |        // clocked from timer 2
+           FLEXIO_SHIFTCTL_TIMPOL      |        // shift on neg edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 2  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           //FLEXIO_SHIFTCTL_SMOD( 4 );              // match and store mode
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO1_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // The trigger pattern is 1.5 ms of zeros, followed by 1.5 ms of 1's
+  // for a total 3 ms pattern @5MHz = 15 bits.
+  // We are using 5MHz because this is the fastest that we can sample
+  // and still have the pattern fit in 16 bits.
+  // Remove 1 bit to make it even, and to make sure we dont capture
+  // anything outside the trigger pattern.
+  // pattern = 0000 0001 1111 11xx   mask = 0000 0000 0000 0011
+  //         = 0x01ff                     = 0x0003
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0003U;
+  //FLEXIO1_SHIFTBUF3 =  0xffff000fU;
+  FLEXIO1_SHIFTBUF3 =  0xff000000U;
+  //FLEXIO1_SHIFTBUF3 =  0x01ff0000U;
+  //FLEXIO1_SHIFTBUF3 =  0x00000000U;
+
+
+  // enable FLEXIO3
+  FLEXIO1_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+
+
+// ********************************************************
+// This is for testing the "Match Continuous Mode"
+// Use a square <40kHz wave as input
+// this adds another timer (Timer4) to config2, to reset Timer2 before it can timeout
+// this should be the same as Config4, but using 16-bit counters
+// this appears to work!!
+// timers are not in any logical order, this is just how it was configured when I got it to work
+int Flex1_1553Sync_config5(void)
+{
+  // setup flex clock for i.MXRT1062
+  // note that the clock setup is device specific
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_OFF);      // disable clock
+  CCM_CDCDR &= ~( CCM_CDCDR_FLEXIO1_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CDCDR |= CCM_CDCDR_FLEXIO1_CLK_PODF( 5 );     // set flex clock = 40MHz
+                                                    // clock speed = 480MHz/2/(N+1)
+  CCM_CCGR5 |= CCM_CCGR5_FLEXIO1(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO1 (clock MUST be enabled or this will hang)
+  FLEXIO1_CTRL |= 2;    // reset Flex module
+  FLEXIO1_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 1
+    // 1553 input bit stream
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_04 = 4;     // FLEXIO pin4    Teensy pin 2
+    // Timer 0,1,2 outputs
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_05 = 4;     // FLEXIO pin5    Teensy pin 3
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_06 = 4;     // FLEXIO pin6    Teensy pin 4
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_07 = 4;     // FLEXIO pin7    Teensy pin 33
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_08 = 4;     // FLEXIO pin8    Teensy pin 5
+
+  #define SHIFTER3_IN   4     // Teensy pin 2    match input
+  #define TIMER1_OUT    6     // Teensy pin 4    for debug only
+  #define TIMER2_OUT    8     // Teensy pin 5    for debug only
+  #define TIMER4_OUT    5     // Teensy pin 3    reset for Timer3
+  #define TIMER7_OUT    7     // Teensy pin 33   for debug only
+
+
+  // setup flex timer 1 *****************************************************
+  // this is here so that we can see something happen if we get a trigger from Shifter3
+  // produces a 1MHz clock
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by an output from Shifter3 status flag
+  FLEXIO1_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL(TIMER1_OUT) |      // timer pin 6 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO1_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  TBD
+  //  22 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (22*2-1)<<8  | (40/2-1)
+  //                                         (43)<<8  | (19)
+  //                                          0x2b00  | 0x13
+  FLEXIO1_TIMCMP1    =    0x2b13;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 5MHz shift clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO1_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL(TIMER2_OUT) |      // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 40MHz, we want 5MHz, so divide by 8
+  //  TIMCMP = divider/2-1 = 8/2-1 = 3
+  FLEXIO1_TIMCMP2    =    0x0003U;
+
+
+  // setup flex timer 3 *****************************************************
+  // this is the shift counter for Shifter3
+  // the shift clock is passed thru from Timer2
+  // it is clocked from from Timer2
+  // it is always enabled
+  // it is reset by Timer4
+  FLEXIO1_TIMCTL3    =
+           FLEXIO_TIMCTL_TRGSEL( 11 )     |        // trigger on Timer2 out (2 * 4)+3
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 0 )      |        // timer pin output disabled
+           FLEXIO_TIMCTL_PINSEL(TIMER4_OUT) |      // timer pin 5 (used as Reset input)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG3    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trig, shift clock = Trig
+           FLEXIO_TIMCFG_TIMRST( 4 )      |        // reset timer on pin rising edge
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // timer never disables
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  //  102 shifts                           (n*2-1)
+  //                                     (102*2-1)
+  //                                         (204)
+  FLEXIO1_TIMCMP3    =    203;
+  // this would normally timeout and stop after 102 shifts, however it will be reset by Timer4
+  // after 100 shifts, so the timeout never happens
+
+
+  // setup flex timer 4 *****************************************************
+  // this is an an extra timer that produces a reset to Timer3
+  // it is clocked from from FlexIO
+  // it is always enabled
+  FLEXIO1_TIMCTL4    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL(TIMER4_OUT) |      // timer pin 5 (resets Timer3)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit counter mode
+
+  FLEXIO1_TIMCFG4    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+
+  //  50 shifts * 8 flex clocks             (n-1)
+  //                                      (400-1)
+  //                                        (399)
+  //                                       0x018F
+  FLEXIO1_TIMCMP4    =  0x18F;
+  // output toggles after 50 shifts, but reset is on rising edge only, so reset is every 100 shifts
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this basically passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO1_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL(TIMER7_OUT) |      // timer pin 7 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO1_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  FLEXIO1_TIMCMP7    =  0;    // times out on first clock after trigger
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO1_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 3 )    |        // clocked from timer 3
+           FLEXIO_SHIFTCTL_TIMPOL         |        // shift on neg edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL(SHIFTER3_IN) |   // FLEXIO pin 4    Teensy pin 2  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO1_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  FLEXIO1_SHIFTBUF3 =  0xff000000U;    // pattern triggers on a glitch free rising edge
+  //FLEXIO1_SHIFTBUF3 =  0x00ff0000U;    // pattern triggers on a glitch free falling edge
+
+
+
+  // enable FLEXIO3
+  FLEXIO1_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+
+
+
+int Flex1_writeShifter3( unsigned long config )
+{
+   FLEXIO1_SHIFTBUF3 = config;
+   return 0;
+}
+
+
+uint32_t Flex1_readShifter3( void )
+{
+   return FLEXIO1_SHIFTBUF3;
+}
+
+
+
+// ********************************************************
+// This is for testing the "Match Continuous Mode"
+// Use a square <40kHz wave as input
+// processor = I.MXRT1062
+int Flex3_1553Sync_config(void)
+{
+  // setup flex clock
+  // note: FlexIO2 and FlexIO3 share the same clock
+  CCM_CS1CDR &= ~( CCM_CS1CDR_FLEXIO2_CLK_PODF( 7 ) ); // clear flex clock bits
+  CCM_CS1CDR |= CCM_CS1CDR_FLEXIO2_CLK_PODF( 4 );   // set flex clock = 48MHz
+                                                    // clock speed = 480MHz/(N+1)
+  CCM_CCGR3 |= CCM_CCGR3_FLEXIO2(CCM_CCGR_ON);      // enable clock
+
+  // if the Flex module gets hung up, reconfiguring will not fix it, you will
+  // need to reset it. Flex module should be disabled during configuration or
+  // else you will likely get "random" output transitions during config.
+  // Reset and disable FLEXIO3 (clock MUST be enabled or this will hang)
+  FLEXIO3_CTRL |= 2;    // reset Flex module
+  FLEXIO3_CTRL &= 0xfffffffc;  // release reset and leave Flex disabled
+
+  // route IO pins to FlexIO 3
+    // 1553 input bit stream
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_04 = 9;      // FLEXIO pin4    Teensy pin 40
+    // Timer 0,1,2 outputs
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_10 = 9;      // FLEXIO pin10   Teensy pin 20
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_11 = 9;      // FLEXIO pin11   Teensy pin 21
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_08 = 9;      // FLEXIO pin8    Teensy pin 22
+    // Compare output
+  IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_09 = 9;      // FLEXIO pin9    Teensy pin 23
+    // State machine out / shifter in
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_12 = 9;      // FLEXIO pin12   Teensy pin 38
+  //IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B1_13 = 9;      // FLEXIO pin13   Teensy pin 39
+
+
+  // setup flex timer 1 *****************************************************
+  // this is a 1MHz clock to step both shifters
+  // it is clocked from from the FLEXIO clock
+  // it is enabled by TBD
+  FLEXIO3_TIMCTL1    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |       // Try Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 11 )     |        // timer pin 11 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // dual counter/baud mode
+
+  FLEXIO3_TIMCFG1    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 2 )      |        // disable timer on timer compare
+           FLEXIO_TIMCFG_TIMENA( 6 )      |        // enable timer on trigger rising
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  TBD
+  //  22 shifts,  divide clock by 40     ((n*2-1)<<8) | (baudrate_divider/2-1))
+  //                                     (22*2-1)<<8  | (40/2-1)
+  //                                         (43)<<8  | (19)
+  //                                          0x2b00  | 0x13
+  FLEXIO3_TIMCMP1    =    0x2b13;
+
+
+  // setup flex timer 2 *****************************************************
+  // this is a 6MHz clock for shifter 3
+  // it is clocked from from the FLEXIO clock
+  // it is always enabled
+  FLEXIO3_TIMCTL2    =
+           FLEXIO_TIMCTL_TRGSEL( 0 )      |        // trigger not used
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger not used
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 8 )      |        // timer pin 8 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 1 );               // 16-bit timer mode
+
+  FLEXIO3_TIMCFG2    =
+           FLEXIO_TIMCFG_TIMOUT( 0 )      |        // timer output = logic high when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 0 )      |        // decrement on FlexIO clock, shift clock = timer output
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+  //  Flex clock = 48MHz, we want 6MHz, so divide by 8
+  //  TIMCMP = divider/2-1 = 8/2-1 = 3
+  //FLEXIO3_TIMCMP2    =    0xffff0003U;
+  FLEXIO3_TIMCMP2    =    0x0003U;
+
+
+  // setup flex timer 7 *****************************************************
+  // for debug only
+  // this just passes the trigger thru to an IO pin for debug
+  // it is always enabled
+  FLEXIO3_TIMCTL7    =
+           FLEXIO_TIMCTL_TRGSEL( 13 )     |        // Shifter3 status flag =(3 * 4) + 1
+           //FLEXIO_TIMCTL_TRGSEL( 11 )     |        // Timer 2 trigger output =(2 * 4) + 3
+           //FLEXIO_TIMCTL_TRGSEL( 8 )      |        // Input Pin 4 =(2 * 4) + 0
+           //FLEXIO_TIMCTL_TRGPOL         |        // trigger active high
+           FLEXIO_TIMCTL_TRGSRC           |        // internal trigger
+           FLEXIO_TIMCTL_PINCFG( 3 )      |        // timer pin output enabled
+           FLEXIO_TIMCTL_PINSEL( 9 )      |        // timer pin 9 (for debug only)
+           // FLEXIO_TIMCTL_PINPOL        |        // timer pin active high
+           FLEXIO_TIMCTL_TIMOD( 3 );               // 16-bit timer mode
+
+  FLEXIO3_TIMCFG7    =
+           FLEXIO_TIMCFG_TIMOUT( 1 )      |        // timer output = logic low when enabled, not affcted by reset
+           FLEXIO_TIMCFG_TIMDEC( 3 )      |        // decrement on Trigger input (both edges), Shift clock equals Trigger input.
+           FLEXIO_TIMCFG_TIMRST( 0 )      |        // dont reset timer
+           FLEXIO_TIMCFG_TIMDIS( 0 )      |        // never disable
+           FLEXIO_TIMCFG_TIMENA( 0 )      |        // timer is always enabled
+           FLEXIO_TIMCFG_TSTOP(  0 )    ;          // stop bit disabled
+           // FLEXIO_TIMCFG_TSTART                 // start bit disabled
+
+
+  // setup data shifter 3 **************************************************
+  // This shifter is configured in Match Continuous Mode
+  // It watches for the sync pattern at the start of the 1553 transmission
+  // and when found, triggers the data capture
+  FLEXIO3_SHIFTCTL3  =
+           FLEXIO_SHIFTCTL_TIMSEL( 2 )    |        // clocked from timer 2
+           // FLEXIO_SHIFTCTL_TIMPOL      |        // on positive edge
+           FLEXIO_SHIFTCTL_PINCFG( 0 )    |        // pin output disabled
+           FLEXIO_SHIFTCTL_PINSEL( 4 )    |        // FLEXIO pin 4    Teensy pin 40  (Input data stream)
+           // FLEXIO_SHIFTCTL_PINPOL      |        // active high
+           FLEXIO_SHIFTCTL_SMOD( 5 );              // match continuous mode
+
+  FLEXIO3_SHIFTCFG3  =
+           FLEXIO_SHIFTCFG_PWIDTH( 0 )    |        // single bit width
+           // FLEXIO_SHIFTCFG_INSRC       |        // from pin
+           FLEXIO_SHIFTCFG_SSTOP( 0 )     |        // stop bit disabled
+           FLEXIO_SHIFTCFG_SSTART( 0 );            // start bit disabled
+
+  // pattern = 0000 0001 1111 11xx   mask = 0000 0000 0000 0011
+  //         = 0x01ff                     = 0x0003
+  //FLEXIO3_SHIFTBUF3 =  0x01ff0003U;
+  //FLEXIO3_SHIFTBUF3 =  0xffff000fU;
+  FLEXIO3_SHIFTBUF3 =  0x0000000fU;
+  //FLEXIO3_SHIFTBUF3 =  0x01fffff0U;
+
+
+  // enable FLEXIO3
+  FLEXIO3_CTRL |= 1;    // enable FLEXIO3 module
+
+  return( 0 );
+}
+
+

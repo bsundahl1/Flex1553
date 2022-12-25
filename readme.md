@@ -7,6 +7,12 @@ Terminal (slave) interface, so that module is better thought out and more
 complete, though could still use more work on the API. The Bus Controller
 (master) interface is more rudimentary, but functional.
 
+## Compatibility
+
+This library is compatible with Teensy 4.0 and 4.1 boards only. The FlexIO
+peripheral found in these boards is used as the protocol engine that makes
+it all work.
+
 ## Background
 
 MIL-STD-1553 is a serial communication protocol developed for the military
@@ -252,6 +258,14 @@ where you would set your RTA and data to send to an RT or BC.
 
 In the case of RT mailboxes, each mailbox is a MIL_1553_packet class, which
 is attached to the MIL_1553_RT class.
+
+## FlexIO Configuration
+
+The hardware design of this project relies heavily on FlexIO, which handles
+the most time critical parts of data transmit and receive. This is tied to
+software via interrupts (still fairly time critical) to handle protocol.
+For detailed information on the FlexIO circuits, refer to the files in the
+/docs directory.
 
 ## References
 

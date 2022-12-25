@@ -713,236 +713,79 @@
   </head>
   <body>
     <article class="markdown-body">
-      <h1 data-sourcepos="1:1-3:0">Flex1553 - MIL-STD-1553 for Teensy 4</h1>
-<p data-sourcepos="4:1-8:55">This is a first-cut at a MIL-STD-1553 interface using the Teensy 4 FlexIO
-as part of the hardware interface. My need was for a Remote
-Terminal (slave) interface, so that module is better thought out and more
-complete, though could still use more work on the API. The Bus Controller
-(master) interface is more rudimentary, but functional.</p>
-<h2 data-sourcepos="10:1-10:16">Compatibility</h2>
-<p data-sourcepos="12:1-14:12">This library is compatible with Teensy 4.0 and 4.1 boards only. The FlexIO
-peripheral found in these boards is used as the protocol engine that makes
-it all work.</p>
-<h2 data-sourcepos="16:1-16:13">Background</h2>
-<p data-sourcepos="18:1-22:25">MIL-STD-1553 is a serial communication protocol developed for the military
-in the late 1970's, and is still used today in many military vehicles and
-aircraft. It has also found its way into some industrial applications. It is
-very reliable and fairly fast with a 1Mb/s bit rate. You could consider it
-a predecessor to CAN bus.</p>
-<p data-sourcepos="24:1-29:9">On the down side, it is a fairly difficult standard to implement at the
-physical layer and is generally must be done with custom peripheral IC's,
-or in recent years, with an FPGA. FlexIO gives us a new tool to use for
-custom or uncommon protocols. This might not be a military grade solution,
-but it is good enough to communicate with 1553 devices, at least for test
-purposes.</p>
-<h2 data-sourcepos="31:1-31:15">Example code</h2>
-<p data-sourcepos="33:1-37:12">This example (BC_get_packet.cpp) configures the Teensy as a MIL-1553 Bus
-Controller. Every time the ENTER key is pressed it will request data from
-an RT. If a properly configured RT is on the 1553 bus, it should respond
-with a status word and data, and the returned data will be sent to the
-serial port.</p>
-<pre data-sourcepos="39:5-115:0"><code>// Instantiate 1553 classes
-  // This configures FlexIO1 as a 1553 transmitter
-  //             and FlexIO2 as a 1553 receiver
-  FlexIO_1553TX flex1553TX(FLEXIO1, FLEX1553_PINPAIR_3);
-  FlexIO_1553RX flex1553RX(FLEXIO2, rx1553Pin);
-
-  // This class supports the basic packet operations of a 1553 bus controller.
-  MIL_1553_BC  myBusController(&amp;flex1553TX, &amp;flex1553RX);
-
-  // This is just a contaier for the packet data
-  MIL_1553_packet myPacket;
-
-  int  rxCount   = 0;
-
-  void setup() {
-     // initialize serial port
-     Serial.begin(115200);
-
-     // configure FlexIO for 1553
-     if( !myBusController.begin() )
-        Serial.println( &quot;myBusController.begin() failed&quot; );
-  }
-
-  // Request data from RT
-  void SendRequest()
-  {
-     int wc = 4; // requested word count
-     myPacket.setWordCount(wc);
-     myPacket.setRta(RTA);
-     myPacket.setSubAddress(SA);
-     rxCount = 0;  // keep track of how much data we get back
-
-     // this will send the request packet and capture a return data words.
-     // the returned data will be loaded into the packet.
-     // it does not wait for the hardware to finish, it just gets
-     // it started and it runs on FlexIO and interrupts from there.
-     myBusController.request(&amp;myPacket, FLEX1553_CH_A);
-
-     // the main loop() polls getRxCount() and displays the returned data
-  }
-
-  void loop() {
-    // check serial port
-     if (Serial.available() &gt; 0)
-     {
-        // Pressing any key will request a packet
-        char c = Serial.read();
-        SendRequest();
-     }
-
-     // check for 1553 response
-     if(rxCount != myPacket.getRxCount()) {
-        rxCount = myPacket.getRxCount();
-        wc      = myPacket.getWordCount();
-
-        // Words received.
-        Serial.print(&quot;, Received:&quot;);
-        Serial.println(rxCount);
-
-        // check for errors
-        if(myPacket.getParityErr() == true)
-           Serial.println(&quot;Parity error detected&quot;);
-        if(myPacket.getBitFault() == true)
-           Serial.println(&quot;Transition fault detected&quot;);
-
-        // if we got the whole packet, dump the data
-        if(rxCount == wc + 1) {  // packet data words + STATUS
-           printPacket(&amp;myPacket);
-           if(myPacket.validatePacket())
-              Serial.println(&quot;  packet Ok&quot;);
-           else
-              Serial.println(&quot;  packet failed validation&quot;);
-        }
-     }
-  }
-</code></pre>
-<h2 data-sourcepos="116:1-116:11">Hardware</h2>
-<p data-sourcepos="118:1-119:77">Due to the transformer coupled bus, some external hardware will always be
-needed for 1553. The required circuitry is shown here (for a single channel).</p>
-<p data-sourcepos="121:1-121:44"><img src="docs/Flex1553Ckt1.png" alt="External circuitry" /></p>
-<p data-sourcepos="123:1-124:40">Only three pins are needed per channel, two for transmit and one for receive.
-The lists of valid pins are shown below.</p>
-<p data-sourcepos="126:1-130:69">T1 is the key component here. This transformer couples our signals to the
-bus and increases the voltage from our local 3.3V levels to about 20Vpp
-levels on the bus. The bus itself is bidirectional, meaning that signals
-travel in both directions (transmit and receive). The transformer used here
-is designed specifically for 1553 use, substitutions are not advised.</p>
-<p data-sourcepos="132:1-137:10">Q1 and Q2 are driver transistors for the transformer. 5V power is sourced
-to the center tap of the transformer, and with both transistors off, all
-primary pins of the transformer will be at 5V and no current flows. If one
-of the transistors turns on, it will pull that end of the transformer to
-ground and cause a current flow, which will induce a output into the
-secondary.</p>
-<p data-sourcepos="139:1-141:27">When transmitting, Q1 will come on to drive the bus high, or Q2 will come
-on to drive it low. They never come on at the same time, nor are they ever
-both off during a transmit.</p>
-<p data-sourcepos="143:1-148:59">The rest of the time (when receiving or idle) both Q1 and Q2 will be off,
-so the transformer is not producing any output. But signals may still
-travel in the opposite direction, from the bus, back through the
-transformer to the output of our transistors. Normally these would be at
-5 volt levels, but just to be safe, we have D1 and D2 to shunt off any
-voltages that might be high enough to damage our circuitry.</p>
-<p data-sourcepos="150:1-152:50">U1 is a receiver circuit (intended for RS-485 designs) which is being used
-to capture the incoming signals and translate the 5V differential input to
-the 3.3V level that our Teensy receiver will need.</p>
-<p data-sourcepos="154:1-158:71">J1 and J2 are standard 50 ohm connectors. 1553 normally makes use of
-&quot;twinax&quot; connectors, which have both positive and negative signals, as well
-as ground, in the same connector. These connectors, and the related cable,
-is hard to get, and quite expensive. I have seen that using two standard 50
-ohm cables (in reasonably short, matched lengths), will work just fine.</p>
-<p data-sourcepos="160:1-160:67">R3 and R4 are sometimes needed, depending upon your bus connection.</p>
-<h3 data-sourcepos="162:1-162:16">TX Pin pairs</h3>
-<p data-sourcepos="164:1-169:59">This was written so that the transmitter can use two sets of output pins
-(channel A and channel B). They both use the same transmitter but pretend
-to be two different channels. The intent here is to provide two transmitters
-and two receivers in three FlexIO modules. The receivers need to operate
-simultaneously, but the transmitters do not. If this feature is not needed,
-pass a -1 for the pinPairB parameter in the TX constructor.</p>
-<p data-sourcepos="171:1-174:3">A 1553 transmitter needs a differential output (two pins) to control the
+      <h1 data-sourcepos="1:1-3:0">FlexIO 1553 Transmit class</h1>
+<p data-sourcepos="4:1-8:62">This class implements a 1553 transmitter in one FlexIO module of the NXP
+i.MXRT1062 processor. This is a physical layer only, it sends a SYNC, 16
+data bits, and a parity bit. It does not know about packets, it does not
+know the meaning of any of the control bits other than parity. There is no
+synchronization with the receive module (thus no acknowledge).</p>
+<h3 data-sourcepos="11:1-11:13">Pin pairs</h3>
+<p data-sourcepos="13:1-16:3">A 1553 transmitter needs two differential output pins to control the
 required isolation transformer. Due to the way that FlexIO uses pins in
 State Machine mode, these are the only combinations of pins available for
 TX:</p>
-<pre data-sourcepos="176:5-182:0"><code>Teensy 4.1
-FlexIO_1:         FlexIO_2:          FlexIO_3:          Define:
- pair1: n/a        pair1: 10,12       pair1: 19,18       FLEX1553_PINPAIR_1
- pair2: n/a        pair2: 11,13       pair2: 14,15       FLEX1553_PINPAIR_2
- pair3: 2,3        pair3: n/a         pair3: 40,41       FLEX1553_PINPAIR_3
- pair4: 4,33       pair4: n/a         pair4: 17,16       FLEX1553_PINPAIR_4
+<pre data-sourcepos="18:5-24:0"><code>Teensy 4.1
+FlexIO_1:         FlexIO_2:          FlexIO_3:
+ pair1: n/a        pair1: 10,12       pair1: 19,18
+ pair2: n/a        pair2: 11,13       pair2: 14,15
+ pair3: 2,3        pair3: n/a         pair3: 40,41
+ pair4: 4,33       pair4: n/a         pair4: 17,16
 </code></pre>
-<p data-sourcepos="183:1-185:74">Each pin pair is listed in the order of <em><strong>pos</strong></em>, <em><strong>neg</strong></em> pins. These
+<p data-sourcepos="25:1-31:34">In military use, there are usually two 1553 transmitters, and two
+receivers. This is for fail safe redundancy. Only one pin pair is needed
+for normal operation, but if two are desired, we can drive two sets of
+hardware from a single FlexIO transmitter by using multiple pin pairs. Only
+one pair will be enabled at a time (by software) so that it appears to work
+as two separate transmitters. Or both may be enabled at the same time to
+have a true redundant transmitter.</p>
+<p data-sourcepos="33:1-36:35">Each pin pair is listed in the order of <em><strong>pos</strong></em>, <em><strong>neg</strong></em> pins. These
 will control the FET drivers and isolation transformer needed for standard
-1553. Pay attention to the order. If you get them backwards, it wont work.</p>
-<p data-sourcepos="187:1-188:30">Configure FlexIO module and the pins pair(s) that you would like to use when
+1553. Pay attention to the order. If you get them backwards, it wont work.
+(Yes, it could be fixed in FlexIO).</p>
+<p data-sourcepos="38:1-39:30">Configure FlexIO module and the pins pair(s) that you would like to use when
 instantiating FlexIO_1553TX().</p>
-<h3 data-sourcepos="190:1-190:11">RX Pins</h3>
-<p data-sourcepos="192:1-193:38">Each receive channel requires one FlexIO module. These are the pins which
-may be used for the data receive line:</p>
-<pre data-sourcepos="195:5-198:0"><code> Teensy 4.1
-  FlexIO_1          FlexIO_2         FlexIO_3
-   2,3,4,5,33        6,9,11,13        14,15,16,17,20,21,22,23,40,41
-</code></pre>
-<p data-sourcepos="199:1-199:70">This is configured by the receiver class constructor, FlexIO_1553RX().</p>
-<h3 data-sourcepos="201:1-201:21">Bill Of Materials</h3>
-<pre data-sourcepos="203:5-219:0"><code>  Qnt       Ref               Part          Supplier    Part Num                  Footprint
-  ____________________________________
-
-  1         C1                0.1uF         Digi-Key    311-1142-1-ND             0805-2012
-  2         C2,C3             3.3uF,25V     Digi-Key    445-6966-1-ND             0805-2012
-  2         D1,D2             20V zener     Digi-Key    SMAJ5932BTPMSCT-ND        DO-214AC
-  2         J1,J2             SMB           Digi-Key    J613-ND
-  2         Q1,Q2             SI2318CDS     Digi-Key    SI2318DS-T1-E3CT-ND       SOT23-3
-              Substitute      SI2304DDS     Digi-Key    742-SI2304DDS-T1-BE3CT-ND
-  2         R1,R2             1K            Digi-Key    P1.00KCCT-ND              0805-2012
-  2         R20,R23           20K           Digi-Key    P20.0KCCT-ND              0805-2012
-  2         R3,R4             0             Digi-Key    311-0.0ARCT-ND            0805-2012
-  1         T1                Q1553-21      Mouser      673-Q1553-21
-  1         U1                LTC2862       Digi-Key    LTC2862CS8-2#TRPBFCT-ND   SOP8
-  1                           Teensy4.1     PJRC        TEENSY41                  48D2430Y600
-</code></pre>
-<h2 data-sourcepos="220:1-220:24">Software architecture</h2>
-<p data-sourcepos="222:1-227:62">This is a Packet level interface to MIL-STD-1553 transceiver. Lower level
-classes (Flex1553RX &amp; Flex1553TX) are directly controlling FlexIO hardware,
-either a transmitter or receiver, but not both. A full 1553 transaction
-requires both sending (command or data) and receiving (data or status). The
-classes which brings it all together are MIL_1553_BC (master) and MIL_1553_RT
-(slave). Only one of these two classes should be instantiated.</p>
-<p data-sourcepos="229:1-231:58">This supports sending/getting only a single 1553 transaction at a time (up
-to 32 words of data). This class replaces the ISR in Flex1553RX.cpp, with a
-more sophisticated version that works with a packet class.</p>
-<h3 data-sourcepos="233:1-233:15">MIL_1553_BC</h3>
-<p data-sourcepos="235:1-238:72">This is the bus controller class. This class supports the basic packet
-operations of a 1553 bus controller. It sets up the control word and
-handles the acknowledge. This requires the use of one FlexIO_1553TX and one
-or two FlexIO_1553RX instances. It could still use some work on the API.</p>
-<h3 data-sourcepos="240:1-240:15">MIL_1553_RT</h3>
-<p data-sourcepos="242:1-247:32">This is the remote terminal class. This is setup as mailboxes, where each
-mailbox refers to one subaddress. There may be up to two instances of this
-class, where each instance is used for one 1553 bus. If using two buses,
-each will use its own instance of FlexIO_1553RX, and FlexIO_1553TX is shared
-between the two. If using two buses, the buses operate independently, they
-do not work as a redundant pair.</p>
-<p data-sourcepos="249:1-252:62">There can only be one Flex1553RX or Flex1553TX instantiation for each FlexIO
-module. In the case of the i.MXRT1062, there are three FlexIO modules, and
-you would typically implement one TX class and one or two RX classes. You
-can not have two instances pointing to the same FlexIO module.</p>
-<h3 data-sourcepos="254:1-254:19">MIL_1553_packet</h3>
-<p data-sourcepos="256:1-257:61">This class is just a container for packet configuration and data. This is
-where you would set your RTA and data to send to an RT or BC.</p>
-<p data-sourcepos="259:1-260:37">In the case of RT mailboxes, each mailbox is a MIL_1553_packet class, which
-is attached to the MIL_1553_RT class.</p>
-<h2 data-sourcepos="262:1-262:13">References</h2>
-<ul data-sourcepos="264:1-268:0">
-<li data-sourcepos="264:1-264:107"><a href="https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf">MIL-STD-1553.pdf</a></li>
-<li data-sourcepos="265:1-265:121"><a href="https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf">REVIEW AND RATIONALE OF MIL-STD-1553 A AND B</a></li>
-<li data-sourcepos="266:1-266:29"><a href="https://www.milstd1553.com/">https://www.milstd1553.com/</a></li>
-<li data-sourcepos="267:1-268:0"><a href="https://www.ddc-web.com/en/connectivity/databus/milstd1553-1">DDC Website</a> (requires login)</li>
-</ul>
-<p data-sourcepos="269:1-271:183">For detailed information on FlexIO, refer to the NXP reference manual,
-Chapter 50. (Look for &quot;i.MX RT1060X Processor Reference Manual&quot; on
-<a href="https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/i-mx-rt-crossover-mcus/i-mx-rt1060-crossover-mcu-with-arm-cortex-m7-core:i.MX-RT1060">NXP Website</a>).</p>
-<p data-sourcepos="273:1-274:73">For a crash course in FlexIO, see miciwan's excellent 'getting started' writeup
-<a href="https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO">https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO</a></p>
+<h3 data-sourcepos="41:1-41:12">Hardware</h3>
+<h3 data-sourcepos="43:1-43:14">Debug pins</h3>
+<h3 data-sourcepos="45:1-45:24">FlexIO Configuration</h3>
+<p data-sourcepos="47:1-48:52">This diagram tries to cover the full configuration for one FlexIO 1553 transmit
+module (not counting features added for debug only).</p>
+<p data-sourcepos="50:1-50:51"><img src="1553_TX_Config.png" alt="FlexIO Configuration Diagram" /></p>
+<h2 data-sourcepos="52:1-52:16">State machine</h2>
+<p data-sourcepos="54:1-59:62">If you have never seen a state diagram before, this may look intimidating,
+but is really is fairly simple. Each circle represents a state. In FlexIO,
+each state is a shifter, and the state number is the number of the shifter
+used for that state. If that already sounds confusing, just remember that
+when a shifter is in state machine mode, it is not used as a shifter, but
+as a 32-bit register to hold the configuration for that state.</p>
+<p data-sourcepos="61:1-64:51">I always use state 0 as the initial state. You do not have to use state 0,
+but this is the default, so why fight it? For the other states I use 4 thru
+7 (there are only 8 shifters, thus only 8 possible states). Shifter1 and 2
+I actually use as shifters, and Shifter3 is unused.</p>
+<h3 data-sourcepos="66:1-66:14">Interrupts</h3>
+<p data-sourcepos="68:1-69:25">The following interrupts may be used to trigger software routines from a
+FlexIO transmitter event.</p>
+<h4 data-sourcepos="71:1-71:32">Shifter1: Transmitter Empty</h4>
+<p data-sourcepos="73:1-76:42">This interrupt will occur when FlexIO loads a word from the Shifter1 holding
+register into the transmit shifter. The holding register acts as a one word
+FIFO for the transmitter. This interrupt should be used by the software to
+load the next word to FlexIO for transmit.</p>
+<h4 data-sourcepos="78:1-78:28">Timer2: End of Transmit</h4>
+<p data-sourcepos="80:1-83:14">This interrupt will occur just after the last bit has been sent from the
+transmitter. This occurs at the same time that the transmitter goes into
+tri-state. This can be used to signal the end of a packet, or a bus turnaround
+from TX to RX.</p>
+<h4 data-sourcepos="85:1-85:36">Timer6: End of Transmit Delayed</h4>
+<p data-sourcepos="87:1-90:57">One advantage of a FlexIO peripheral: if you dont like the behavior of an
+interrupt, you can make your own. This is basically the same as the &quot;End of
+Transmit&quot; interrupt above, but is delayed by another 2 microseconds. This
+timer has no purpose other than to generate an interrupt.</p>
+<p data-sourcepos="92:1-95:23">The receiver takes an extra half clock (1/2 us) after receiving the last
+data bit to latch the data into the receive data register, so if you need
+the EOT interrupt to happen <strong>after</strong> the &quot;Receiver Full&quot; interrupt, use
+this interrupt instead.</p>
+<h3 data-sourcepos="97:1-97:14">References</h3>
+<p data-sourcepos="99:4-100:88"><a href="https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf">https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf</a>
+<a href="https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf">https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf</a></p>
 
     </article>
   </body>

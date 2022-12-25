@@ -8,21 +8,6 @@ know the meaning of any of the control bits other than parity. There is no
 synchronization with the receive module (thus no acknowledge).
 
 
-## Background
-
-MIL-STD-1553 is a serial communication protocol developed for the military
-in the late 1970's, and is still used today in many military vehicles and
-aircraft. It has also found its way into some industrial applications. It is
-very reliable and fairly fast with a 1Mb/s bit rate. You could consider it
-a predecessor to CAN bus.
-
-On the down side, it is a fairly difficult standard to implement at the
-physical layer and is generally must be done with custom peripheral IC's,
-or in recent years, with an FPGA. FlexIO gives us a new tool to use for
-custom or uncommon protocols. This might not be a military grade solution,
-but it is good enough to communicate with 1553 devices, at least for test
-purposes.
-
 ### Pin pairs
 
 A 1553 transmitter needs two differential output pins to control the
@@ -53,17 +38,16 @@ will control the FET drivers and isolation transformer needed for standard
 Configure FlexIO module and the pins pair(s) that you would like to use when
 instantiating FlexIO_1553TX().
 
-### Debug pins
-
-### Configuration
-
 ### Hardware
 
-### References
+### Debug pins
 
-   https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf
-   https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf
+### FlexIO Configuration
 
+This diagram tries to cover the full configuration for one FlexIO 1553 transmit
+module (not counting features added for debug only).
+
+![FlexIO Configuration Diagram](1553_TX_Config.png)
 
 ## State machine
 
@@ -109,3 +93,9 @@ The receiver takes an extra half clock (1/2 us) after receiving the last
 data bit to latch the data into the receive data register, so if you need
 the EOT interrupt to happen **after** the "Receiver Full" interrupt, use
 this interrupt instead.
+
+### References
+
+   https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf
+   https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf
+

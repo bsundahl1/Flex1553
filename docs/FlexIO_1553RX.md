@@ -42,24 +42,29 @@ can not have two instances pointing to the same FlexIO module.
 
 ## FlexIO Configuration Overview
 This is a fairly complex configuration and uses many of the capabilities of
-FlexIO. This circuit can be broken down into four basic sections:
+FlexIO. This diagram shows the complete configuration for one FlexIO 1553
+receive module.
 
- **Sync Detection** continuously scans the incoming data stream for a valid
- 1553 sync pattern, and when found, triggers the rest hardware to
- demodulate and capture the data bits.
+![FlexIO Configuration Diagram](1553_RX_Config.png)
 
- **Demodulation** decodes the Manchester II bi-phase signal pattern used by
- 1553 into two output signals, one for the decoded data, and the other to
- indicate any bit faults found in the input.
+This circuit can be broken down into four basic sections:
 
- **Data capture** just grabs the output from the state machine and triggers
- an interrupt so that software can retrieve the data.
+**Sync Detection** continuously scans the incoming data stream for a valid
+1553 sync pattern, and when found, triggers the rest hardware to
+demodulate and capture the data bits.
 
- **End of Transmission** triggers an interrupt after a packet has been
- received, allowing software to respond with an and acknowledge packet
- within the timing window allowed by the 1553 spec.
+**Demodulation** decodes the Manchester II bi-phase signal pattern used by
+1553 into two output signals, one for the decoded data, and the other to
+indicate any bit faults found in the input.
 
- Each of these is described in detail below.
+**Data capture** just grabs the output from the state machine and triggers
+an interrupt so that software can retrieve the data.
+
+**End of Transmission** triggers an interrupt after a packet has been
+received, allowing software to respond with an and acknowledge packet
+within the timing window allowed by the 1553 spec.
+
+Each of these is described in detail below.
 
 
 ### Sync Detection

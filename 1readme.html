@@ -931,17 +931,23 @@ can not have two instances pointing to the same FlexIO module.</p>
 where you would set your RTA and data to send to an RT or BC.</p>
 <p data-sourcepos="259:1-260:37">In the case of RT mailboxes, each mailbox is a MIL_1553_packet class, which
 is attached to the MIL_1553_RT class.</p>
-<h2 data-sourcepos="262:1-262:13">References</h2>
-<ul data-sourcepos="264:1-268:0">
-<li data-sourcepos="264:1-264:107"><a href="https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf">MIL-STD-1553.pdf</a></li>
-<li data-sourcepos="265:1-265:121"><a href="https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf">REVIEW AND RATIONALE OF MIL-STD-1553 A AND B</a></li>
-<li data-sourcepos="266:1-266:29"><a href="https://www.milstd1553.com/">https://www.milstd1553.com/</a></li>
-<li data-sourcepos="267:1-268:0"><a href="https://www.ddc-web.com/en/connectivity/databus/milstd1553-1">DDC Website</a> (requires login)</li>
+<h2 data-sourcepos="262:1-262:23">FlexIO Configuration</h2>
+<p data-sourcepos="264:1-268:16">The hardware design of this project relies heavily on FlexIO, which handles
+the most time critical parts of data transmit and receive. This is tied to
+software via interrupts (still fairly time critical) to handle protocol.
+For detailed information on the FlexIO circuits, refer to the files in the
+/docs directory.</p>
+<h2 data-sourcepos="270:1-270:13">References</h2>
+<ul data-sourcepos="272:1-276:0">
+<li data-sourcepos="272:1-272:107"><a href="https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf">MIL-STD-1553.pdf</a></li>
+<li data-sourcepos="273:1-273:121"><a href="https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf">REVIEW AND RATIONALE OF MIL-STD-1553 A AND B</a></li>
+<li data-sourcepos="274:1-274:29"><a href="https://www.milstd1553.com/">https://www.milstd1553.com/</a></li>
+<li data-sourcepos="275:1-276:0"><a href="https://www.ddc-web.com/en/connectivity/databus/milstd1553-1">DDC Website</a> (requires login)</li>
 </ul>
-<p data-sourcepos="269:1-271:183">For detailed information on FlexIO, refer to the NXP reference manual,
+<p data-sourcepos="277:1-279:183">For detailed information on FlexIO, refer to the NXP reference manual,
 Chapter 50. (Look for &quot;i.MX RT1060X Processor Reference Manual&quot; on
 <a href="https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/i-mx-rt-crossover-mcus/i-mx-rt1060-crossover-mcu-with-arm-cortex-m7-core:i.MX-RT1060">NXP Website</a>).</p>
-<p data-sourcepos="273:1-274:73">For a crash course in FlexIO, see miciwan's excellent 'getting started' writeup
+<p data-sourcepos="281:1-282:73">For a crash course in FlexIO, see miciwan's excellent 'getting started' writeup
 <a href="https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO">https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO</a></p>
 
     </article>

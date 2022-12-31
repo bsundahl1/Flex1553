@@ -1,0 +1,20 @@
+This document describes how to use two 16-bit timers for Baud/Shift timing, rather than using Dual 8-bit mode.
+
+Every FlexIO example I have seen uses the "Dual 8-bit counters baud mode". This is a convenient configuration which combines an 8-bit "baud" divider to get the desired shift rate, as well as an 8-bit shift counter to get the desired number of bit shifts. And most of the time, this is exactly what you want to do. This allows the Flex clock rate to be divided by any even number from 2 to 512 (there is effectively a divide by 2 on the output of the timer), and to shift any number of bits from 1 to 128 (the counter counts on both rising and falling edges).
+
+But what if you do want an especially slow shift rate, or to shift more than 128 bits. There are, after all, 256 bits of shifters available on the RT1060. The reference manual indicates that two 16-bit timers may be used to perform the same task, but does not show how to do this.
+
+The configuration shown here is a 256 bit pattern generator, or perhaps pattern "shifter" is a more accurate name. Any number of bits from 1 to all 256, may be loaded into the shifters, and then shifted out under hardware control.
+
+The trick is to use TIMDEC mode 2 or 3 on the shift counter (Timer1 in the diagram). In these modes, the counter counts down as usual, with a timeout ending the shift sequence, but the SHIFT CLOCK is passed through from the input clock source. The only difference between the two modes (that I am aware of) is that mode 2 clocks from the PIN input, and mode 3 clocks from the TRIG input. In either case, that clock will be passed on to the Shifter clock. The baud counter (Timer0 in the diagram) generates the bit shift clock, which is then fed to the TRIG input of the shift counter.
+
+In this example, Timer0 is being used to control ENA and DIS of both timers. Timer1 is using a feature which allows it to enable and disable based on "timer N-1". But it is Timer1 that knows when the shift sequence needs to stop, so its "timer out" must be fed back to the Timer0 disable. Any unused FXIO_D signal may be used to do this. Timer1 uses its PIN as an output to export the timer out, and Timer0 uses its PIN as input to wire this signal to its disable.
+
+Timer0 enable comes from Shifter0 status flag. This is what starts the whole thing running when something is loaded into Shifter0.
+
+
+Working with FlexIO is basically solving a puzzle (which does not necessarily have a solution). Fitting your design requirements into the tricky architecture of the Flex Timers and Shifters, takes some thought, and often, more than one night laying awake in bed, thinking about it. If you don't like solving puzzles, you probably won't like FlexIO.
+
+
+ALL CAPS for registers
+italics? for key words

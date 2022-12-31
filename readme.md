@@ -1,5 +1,6 @@
-Flex1553 - MIL-STD-1553 for Teensy 4
-==========================
+# Flex1553 - MIL-STD-1553 for Teensy 4
+
+===========================================
 
 This is a first-cut at a MIL-STD-1553 interface using the Teensy 4 FlexIO
 as part of the hardware interface. My need was for a Remote
@@ -112,7 +113,6 @@ serial port.
          }
       }
 
-
 ## Hardware
 
 Due to the transformer coupled bus, some external hardware will always be
@@ -216,7 +216,6 @@ This is configured by the receiver class constructor, FlexIO_1553RX().
       1         U1                LTC2862       Digi-Key    LTC2862CS8-2#TRPBFCT-ND   SOP8
       1                           Teensy4.1     PJRC        TEENSY41                  48D2430Y600
 
-
 ## Software architecture
 
 This is a Packet level interface to MIL-STD-1553 transceiver. Lower level
@@ -271,7 +270,7 @@ For detailed information on the FlexIO circuits, refer to the files in the
 
 * [MIL-STD-1553.pdf](https://nepp.nasa.gov/docuploads/43745C0A-323E-4346-A434F4342178CD0E/MIL-STD-1553.pdf)
 * [REVIEW AND RATIONALE OF MIL-STD-1553 A AND B](https://www.milstd1553.com/wp-content/uploads/2012/12/MIL-STD-1553B.pdf)
-* https://www.milstd1553.com/
+* [www.milstd1553.com](https://www.milstd1553.com/)
 * [DDC Website](https://www.ddc-web.com/en/connectivity/databus/milstd1553-1) (requires login)
 
 For detailed information on FlexIO, refer to the NXP reference manual,
@@ -279,4 +278,4 @@ Chapter 50. (Look for "i.MX RT1060X Processor Reference Manual" on
 [NXP Website](https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/i-mx-rt-crossover-mcus/i-mx-rt1060-crossover-mcu-with-arm-cortex-m7-core:i.MX-RT1060)).
 
 For a crash course in FlexIO, see miciwan's excellent 'getting started' writeup
-https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO
+[How-to-start-using-FlexIO](https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO)

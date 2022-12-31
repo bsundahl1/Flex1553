@@ -1,0 +1,57 @@
+A Crash Course on Flex Timers
+
+I was inspired to write this after reading miciwan's excelent writeup on getting started with Flex. If you are new to FlexIO, that would be a great place to start. He covers the basics and gives you the code and defines what you need to get started.
+https://forum.pjrc.com/threads/66201-Teensy-4-1-How-to-start-using-FlexIO
+
+After working with FlexIO for a few weeks, I found that the timer, which would seem like the simplest part, is actually the most complicated and the most poorly documented. I have yet to find any official block diagram for the timer, and that has been a lot of my problem. There is a large amount of configurable signal selection done on the timer inputs, and without a block diagram, the limitations are hard to see.
+
+
+I am going to concentrate on the 16-bit counter mode, as this is the most basic. A few basic ground rules:
+   The timer only counts down
+   The starting count is configurable
+   The counter times out when it reaches zero
+   The count value is not visible (it can not be read back)
+
+The timer starts from an initial count (in the TIMCMP register) and counts down on each clock. When it reaches zero, the next clock triggers the counter to reload the initial value and start counting down again, and it also causes the timer output to toggle. (I tend to use the terms "counter" and "timer" interchangeably, so dont let that confuse you.) Because the output toggles after each timeout, the timer will produce square waves with a period of twice the count time.
+
+There is a little more to it than that. There are four programmable inputs to the counter circuit:
+   DEC is the couter clock
+   ENA starts the counter running
+   DIS stops the counter
+   RST will reload the initial count in to the counter, thus extending the count
+       and it can optionally set the counter output high or low
+There is a single output:
+   OUT toggles after each counter timeout
+
+Though there are a few more specialized features, like start and stop bits, but this mostly sums up the capabilities of the timer. What remains is the signal multiplexing that routes signals from shifters, other timers, the Flex clock and external pins, to the four inputs and one output of the timer. This is where the real limitations appear. Up to this point, it would seem that you have four inputs and one output that you can freely connect to other Flex components. Unfortunately this is not true. If you trace thru all the many configuration options, you will find that most of these ultimately connect to two signals, called TRIGGER and PIN. And the PIN used as an input, is the same PIN that is used to route your output to the outside world. So if you need your timer output to go to a physical pin, or if you just want to be able to see it so you can tell what its doing, you cant use PIN as a separate input.
+
+There are some specialized connections like "Timer N-1" and "FlexIO clock" and "Shift clock" that help avoid some of these limitations, but just be aware that the configuration is not nearly as flexible as it initially appears.
+
+
+
+Random notes:
+State machines:
+Each state uses one shifter, this limits the maximum number of states to 8 (and then you would have no Shifters left for anything else).
+If the state changes to a shifter that is not configured as a state machine, the SM will hang
+If the clock is not enabled for the FlexIO module, any access to its registers will hang the code.
+The initial state defaults to 0, so consider using Shifter 0 as a SM. This can be changed by writing the SHIFTSTATE register.
+SM Shifters do not need to be sequential, any available shifters may be used.
+FlexIO2 and FlexIO3 share the same Flex clock. FlexIO1 has its own clock mux and divider.
+
+Timers:
+setting TIMDEC to 3 (decrement on Trigger input, both edges, Shift clock equals Trigger input) seems to bypass the timer altogether and just passes the trigger input to the pin output, BUT the output F/F is not bypassed, so the pin output will be inverted if the starting state of the F/F (set by TIMOUT bits) is not the same as the starting state of the trigger input.
+
+I am not sure of the intent, but I have found this to be useful for debug, as it gives me a way to route some signals to IO pins which are not otherwise accessible.
+
+Free running clocks:
+I often use free running clocks in my designs, which become the time base for everything else. And this is straight forward to do. But what if I need two different clocks which are synchronized to each other, say 1MHz to shift data and 2MHz to clock a state machine, how do I do that?
+I have tried using the higher speed clock to decrement the lower speed timer (divide by 2), and this works except that there will be a 1 Flex clock delay between the two clock edges, which can be a problem.
+The best way I have found to do this is also the simplest. Just set up two separate clocks, both decrementing from the Flex clock, and start them at the same time. The timer values need to be set right, of course, to get the frequencies to exact multiples, but once they are started, they will be synchronized on the rising edges, and will stay that way.
+Set the FLEXEN bit in the FLEXIOx_CTRL register low, setup your clocks (and most everything else). When you set FLEXEN back high, everything that is configured as "always enabled" start at the same time.
+
+Papers
+   timer module
+   how to get a flag to an IO pin
+   how to use two 16-bit timers to control a shifter
+   how to produce a continuous (repeating) pattern
+   how to keep your output data sync'd to a continuous clock

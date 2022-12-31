@@ -1,0 +1,62 @@
+FlexIO Match Continuous Mode
+06-30-2021
+
+I am working on a FlexIO configuration that will use the Shifter in "Match Continuous Mode" to produce a trigger for serial data capture. So far, I have not been able to get any output change from the Shifter. Can someone please tell me what I am doing wrong?
+
+I am clocking the Shifter at 5MHz, and feeding in a "data pattern" which is actually just a 4kHz square wave, into the Pin input. SHIFTBUF = 0xffff000f, which in this mode, should set the Shifter status flag whenever it clocks in 12 or more 1's in a row (or maybe 4 in a row, if I have the mask backwards). I have verified that the 5MHz clock and the input data are present, but I cannot get the flag to go high.
+
+Since the shifter flag is not directly connected to I/O pins, I am checking the flag in three different ways:
+1. Directly checking the SHIFTSTAT and SHIFTERR flags in software.
+2. Timer1 is configured to produce a series of pulses on an output pin if it is triggered.
+3. Timer7 is configured to feed its trigger input to an output pin. This is an unusual configuration, but it seems to work (minus a one FlexIO clock delay). I have been able to pass the 5MHz clock, as well as the input data, through to the associated output pin.
+
+However none of these show any activity on the Shifter 3 status flag. I have been trying different variations on this configuration, but with no luck. Are there any examples which use this mode?
+If anyone has ever made Match Continuous Mode work, I would really like to see your configuration.
+
+Ultimately, I will change the match bits to watch for a sync pattern in a data stream, and use the flag to trigger another shifter which will capture the data. The device I am using is the i.MXRT1062, which has 3 FlexIO modules (I am using FlexIO3), each with 8 shifters and 8 timers.
+
+
+
+https://community.nxp.com/t5/i-MX-RT/FlexIO-not-working-in-Match-Continuous-Mode/m-p/1302598
+
+https://community.nxp.com/t5/NXP-Designs-Knowledge-Base/Kinetis-FlexIO-Ideas-from-Hackster-io/ta-p/1129124
+
+
+Follow up
+8-14-2021
+
+In further attempts to get any output from "Match Continuous Mode", I tried loading all zeros as my match pattern (SHIFTBUF3 = 0). In this case, the shifter flag "match output" does go high, and stays high regardless of what I feed into the input. It acts as if the shifter is not receiving my input data, or not receiving the shift clocks.
+
+So unless there is some trick to this, I suspect that "Match Continuous Mode" is not functional, at least on the RT1062.
+
+
+9/4/21
+Working! (sort of)
+set up start and stop triggers which will capture 24 bits, and match 16 bits with a simple falling edge pattern. The trigger flag goes high for one clock cycle if the pattern occurs between the triggers, meaning that it needs to shift in somewhere between 16 and 24 bits AND contain the full pattern within those bits. One immediate issue: the shifter seems to be cleared to zero on each start trigger. This means that zeros immediately match for bits that have not shifted in yet. So with a pattern of 0xff00 and an input of all 1's, will trigger when the pattern is shifted half way in, because the zeros are already there in the shifter!
+
+It seems to clear the shifter every time the timer times out, even though it does not disable. I think this is what I have been doing wrong all along. While trying use a continuous clock, I have also been continuously clearing the shifter without realizing it.
+
+
+9/6/21
+Perseverance pays off, I finally got it working.
+
+Match continuous mode works very much like receive mode, and receive mode works like this:
+o  the shifter is initially cleared to all zeros.
+o  bits are shifted in on each clock.
+o  when the timer shift count reaches zero:
+   o  the shifter value is transferred to the SHIFTBUF register.
+   o  the shifter is cleared to all zeros to prepare for new data.
+
+Match continuous mode works the same way except instead of transferring data to the SHIFTBUF, it compares data with the SHIFTBUF. But is still CLEARS THE SHIFTER WHEN THE SHIFT TIMER REACHES ZERO. This is true, even though the timer never disables. It will continue shifting in new data, but the previous data is lost after each timeout. I was not expecting this since it doesn't make much sense in this mode (this is match CONTINUOUS mode), and even in receive mode this behavior is undocumented, though somewhat obvious if you think about it. I had been mostly ignoring the shift count, so in all of my previous efforts, the shifter had been clearing before I had my data fully shifted in.
+
+In my opinion, this is a bug, but it can be worked around by using the Reset feature of the timer. Just using a long shift count might work in some cases, but I am watching for a sync pattern that could occur at any time. Though reset sounds like just the opposite of what we want to do, reset actually returns the timer count to its initial value of TIMCMP, so by carful use of this feature, we can prevent the timer from ever reaching zero and the shifter will shift forever.
+
+Another minor issue is that since the shifter is pre-loaded with zeros, zeros will immediately match for bits that have not been shifted in yet. So for example, a pattern of 0xff00 and an input of all 1's, will match when the pattern is shifted half way in (MSB first), because the zeros are already in the shifter. This is only an issue for the first bits after the shifter is cleared, but still might need a work around to prevent a false match.
+
+My working configuration is shown here.
+
+This circuit produces a trigger on each rising edge of the input, which should be a relatively slow square wave. Timer2 produces the shift clock, Timer3 is the shift count, Timer4 resets Timer3 before it reaches zero (so there isn't really a "shift count", but the timer is still required). Timer1 and Timer7 are just there so that we can see something happen. The shifter flag can not be directly routed to a pin, but it can trigger timers, so these timers just produce some visible activity when triggered.
+
+Be aware that this "reset" trick does not work with the timer configured as a dual baud/counter. In this mode, Reset only effects the "baud" half of the timer, but it is the "shift count" that we need to reset.
+
+My source code for the configuration is attached.

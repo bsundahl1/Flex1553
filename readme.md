@@ -31,84 +31,85 @@ purposes.
 
 ## Example code
 
-This example (BC_get_packet.cpp) configures the Teensy as a MIL-1553 Bus
-Controller. Every time the ENTER key is pressed it will request data from
-an RT. If a properly configured RT is on the 1553 bus, it should respond
-with a status word and data, and the returned data will be sent to the
-serial port.
+This shows the basics of how to use the 1553 bus controller. For a complete
+example, see examples/BC_get_packet.cpp
 
-    // Instantiate 1553 classes
-      // This configures FlexIO1 as a 1553 transmitter
-      //             and FlexIO2 as a 1553 receiver
+Instantiate 1553 classes
+
+      #include <Flex1553.h>
+      #include <MIL1553.h>
+
+      // This configures FlexIO1 as a 1553 transmitter on pins 2&3
+      //             and FlexIO2 as a 1553 receiver on pin 6
       FlexIO_1553TX flex1553TX(FLEXIO1, FLEX1553_PINPAIR_3);
-      FlexIO_1553RX flex1553RX(FLEXIO2, rx1553Pin);
+      FlexIO_1553RX flex1553RX(FLEXIO2, 6);
 
-      // This class supports the basic packet operations of a 1553 bus controller.
+      // This class combines the transmitter and receiver to support
+      // the basic packet operations of a 1553 bus controller.
       MIL_1553_BC  myBusController(&flex1553TX, &flex1553RX);
 
       // This is just a contaier for the packet data
       MIL_1553_packet myPacket;
 
-      int  rxCount   = 0;
+Configuration of FlexIO and initialization of objects
 
       void setup() {
-         // initialize serial port
-         Serial.begin(115200);
-
          // configure FlexIO for 1553
          if( !myBusController.begin() )
             Serial.println( "myBusController.begin() failed" );
       }
 
-      // Request data from RT
+Request data from RT
+
       void SendRequest()
       {
-         int wc = 4; // requested word count
-         myPacket.setWordCount(wc);
-         myPacket.setRta(RTA);
-         myPacket.setSubAddress(SA);
-         rxCount = 0;  // keep track of how much data we get back
+         // setup the packet to request 4 words from device 5, subaddress 2
+         myPacket.setWordCount(4);  // requested word count
+         myPacket.setRta(5);        // Remote Terminal Address
+         myPacket.setSubAddress(2); // subaddress is basically a register number
 
-         // this will send the request packet and capture a return data words.
-         // the returned data will be loaded into the packet.
-         // it does not wait for the hardware to finish, it just gets
+         // This will send the request packet.
+         // It does not wait for the hardware to finish, it just gets
          // it started and it runs on FlexIO and interrupts from there.
          myBusController.request(&myPacket, FLEX1553_CH_A);
-
-         // the main loop() polls getRxCount() and displays the returned data
       }
 
+         // The returned data will be loaded into myPacket.
+         // the main loop() polls getRxCount() to determine when the has
+         // been received
+
+Poll for the response
+
+      int rxCount = 0; // will count how many new data words have been received.
+
       void loop() {
-        // check serial port
-         if (Serial.available() > 0)
-         {
-            // Pressing any key will request a packet
-            char c = Serial.read();
-            SendRequest();
-         }
+         int error = 0;
 
          // check for 1553 response
-         if(rxCount != myPacket.getRxCount()) {
+         if(rxCount != myPacket.getRxCount()) { // got some new data
             rxCount = myPacket.getRxCount();
             wc      = myPacket.getWordCount();
 
-            // Words received.
-            Serial.print(", Received:");
-            Serial.println(rxCount);
-
             // check for errors
-            if(myPacket.getParityErr() == true)
+            if(myPacket.getParityErr() == true) {
                Serial.println("Parity error detected");
-            if(myPacket.getBitFault() == true)
+               error = -1;
+            }
+            if(myPacket.getBitFault() == true) {
                Serial.println("Transition fault detected");
+               error = -2
+            }
 
-            // if we got the whole packet, dump the data
-            if(rxCount == wc + 1) {  // packet data words + STATUS
-               printPacket(&myPacket);
-               if(myPacket.validatePacket())
-                  Serial.println("  packet Ok");
-               else
-                  Serial.println("  packet failed validation");
+            // did we get the whole packet?
+            if(error == 0 && rxCount == wc + 1) { // packet data words + STATUS
+               switch(myPacket.getSubAddress()) {
+                  case 1:
+                     // do something with subaddress 1 data
+                     break;
+                  case 2:
+                     // do something with subaddress 2 data
+                     break;
+               }
             }
          }
       }
@@ -219,24 +220,25 @@ This is configured by the receiver class constructor, FlexIO_1553RX().
 ## Software architecture
 
 This is a Packet level interface to MIL-STD-1553 transceiver. Lower level
-classes (Flex1553RX & Flex1553TX) are directly controlling FlexIO hardware,
-either a transmitter or receiver, but not both. A full 1553 transaction
-requires both sending (command or data) and receiving (data or status). The
-classes which brings it all together are MIL_1553_BC (master) and MIL_1553_RT
-(slave). Only one of these two classes should be instantiated.
+classes (Flex1553RX.cpp and Flex1553TX.cpp) are directly controlling FlexIO
+hardware, either a transmitter or receiver, but not both. A full 1553
+packet requires both sending (command or data) and receiving (data or
+status). The classes which brings it all together are MIL_1553_BC (master)
+and MIL_1553_RT (slave). These two classes reside in MIL1553.cpp. Only one
+of these two classes should be instantiated.
 
-This supports sending/getting only a single 1553 transaction at a time (up
-to 32 words of data). This class replaces the ISR in Flex1553RX.cpp, with a
-more sophisticated version that works with a packet class.
+The MIL_1553_xx classes support sending/getting only a single 1553 packet
+(up to 32 words of data). This class replaces the ISR in Flex1553RX.cpp,
+with a more sophisticated version that works with a packet class.
 
-### MIL_1553_BC
+### MIL_1553_BC (in MIL1553.cpp)
 
 This is the bus controller class. This class supports the basic packet
 operations of a 1553 bus controller. It sets up the control word and
 handles the acknowledge. This requires the use of one FlexIO_1553TX and one
-or two FlexIO_1553RX instances. It could still use some work on the API.
+or two FlexIO_1553RX instances.
 
-### MIL_1553_RT
+### MIL_1553_RT (in MIL1553.cpp)
 
 This is the remote terminal class. This is setup as mailboxes, where each
 mailbox refers to one subaddress. There may be up to two instances of this
@@ -250,7 +252,7 @@ module. In the case of the i.MXRT1062, there are three FlexIO modules, and
 you would typically implement one TX class and one or two RX classes. You
 can not have two instances pointing to the same FlexIO module.
 
-### MIL_1553_packet
+### MIL_1553_packet (in MIL1553.cpp)
 
 This class is just a container for packet configuration and data. This is
 where you would set your RTA and data to send to an RT or BC.
@@ -258,7 +260,7 @@ where you would set your RTA and data to send to an RT or BC.
 In the case of RT mailboxes, each mailbox is a MIL_1553_packet class, which
 is attached to the MIL_1553_RT class.
 
-## FlexIO Configuration
+### FlexIO Configuration (Flex1553TX.cpp and Flex1553RX.cpp)
 
 The hardware design of this project relies heavily on FlexIO, which handles
 the most time critical parts of data transmit and receive. This is tied to

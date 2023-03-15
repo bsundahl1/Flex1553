@@ -213,10 +213,14 @@ class MIL_1553_RT
       void dumpInternalState(void);  // for debug
       void dumpMailboxAssigments(void); // for debug
       bool getLedRcvFlag(void);
+      bool getLedTransFlag(void);
       bool errorAvailable(void);
       uint8_t getErrCode(void);
       void printErrReport(void);
       void dumpPacket(int sa);
+      bool setRta(uint8_t rta);
+      uint8_t getRta(void);
+
 
 
    protected:
@@ -233,7 +237,8 @@ class MIL_1553_RT
       uint8_t  wordsSentOnTX;
       uint8_t  wordsReceivedOnRX;
       //uint8_t  msgWordCount;
-      bool     ledRcvFlag = false;
+      bool     ledRcvFlag = false;     // this flag goes high if we detect a SYNC (not necessarily good data)
+      bool     ledTransFlag = false;   // this flag goes high if the ISR sends some data back to the BC
 
       // these are for debugging message problems
       bool     goodExitFlag = true;

@@ -32,7 +32,7 @@
 #define REVERSE_LOOKUP   true
 
 // Optional build flags:
-#define FLEX_PRINT_MESSAGES // uncomment to print startup messages to serial port.
+//#define FLEX_PRINT_MESSAGES // uncomment to print startup messages to serial port.
                               // note that to see these messages, you must wait for the serial
                               // port to connect in setup() :
                               //    Serial.begin(115200);

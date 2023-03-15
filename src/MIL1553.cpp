@@ -1026,8 +1026,8 @@ void MIL_1553_RT::isrRtStateMachine(intrpt_t intrpt)
       case ST_TX_SEND_DATA:
          // Status has been sent, now we send the data
          if(intrpt == INT_TX_EMTY) {
-
             uint16_t data;
+            ledTransFlag = true;    // used to trigger a transmit LED
             if(pPacket) {
                data = pPacket->getData(wordsSentOnTX++);  // get data from buffer
 
@@ -1614,6 +1614,18 @@ bool MIL_1553_RT::getLedRcvFlag(void)
 }
 
 
+// this flag goes true if we send 1553 data back to the BC
+// it goes low when calling this function
+bool MIL_1553_RT::getLedTransFlag(void)
+{
+   if(ledTransFlag == false)
+      return false;
+   else {
+      ledTransFlag = false;
+      return true;
+   }
+}
+
 
 void  MIL_1553_RT::dumpInternalState(void)
 {
@@ -1723,6 +1735,21 @@ void MIL_1553_RT::dumpPacket(int sa)
    Serial.println();
 
 }
+
+
+bool MIL_1553_RT::setRta(uint8_t rta)
+{
+   if(rta <= MIL_1553_MAX_RTA) {
+      myRta = rta;
+      return true;
+   }
+   else
+      return false;
+}
+
+
+uint8_t MIL_1553_RT::getRta(void)
+{ return myRta; }
 
 
 /////////////////////////////////////////////////////////////////////////
